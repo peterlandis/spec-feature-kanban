@@ -171,6 +171,7 @@ flowchart LR
 - **Kanban columns**: WIP and Completed are global; category columns show non-WIP/non-Complete items
 - **Drag & drop**: Move cards to update status or category; changes persist to the tracking file
 - **Create / edit / delete features**: Full CRUD from the UI
+- **Search**: Filter the board to only show matching features
 - **Add / delete categories**: Add new categories; delete only when truly empty
 - **Deletion guardrails**: If a category looks empty but still has hidden WIP/Completed items, deletion shows an alert explaining why
 - **Assignee suggestions**: Prepopulated from existing assignees; supports new assignees

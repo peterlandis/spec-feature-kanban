@@ -12,6 +12,10 @@ let state = {
   postamble: '',
 };
 
+let uiState = {
+  searchQuery: '',
+};
+
 let configState = {
   featuresPath: null,
   usingEnvOverride: false,
@@ -172,20 +176,55 @@ function getColumnKey(cat) {
 
 function getFeaturesForColumn(columnKey) {
   if (columnKey === COL_WIP) {
-    return state.categories.flatMap((c) =>
+    const features = state.categories.flatMap((c) =>
       c.features.filter((f) => f.status === '🔨 WorkInProgress')
     );
+    return applySearch(features);
   }
   if (columnKey === COL_COMPLETE) {
-    return state.categories.flatMap((c) =>
+    const features = state.categories.flatMap((c) =>
       c.features.filter((f) => f.status === '✅ Complete')
     );
+    return applySearch(features);
   }
   const cat = state.categories.find((c) => c.title === columnKey);
   if (!cat) return [];
-  return cat.features.filter(
+  const features = cat.features.filter(
     (f) => f.status !== '🔨 WorkInProgress' && f.status !== '✅ Complete'
   );
+  return applySearch(features);
+}
+
+function normalizeQuery(query) {
+  return (query || '').trim().toLowerCase();
+}
+
+function featureSearchText(feature) {
+  const parts = [
+    feature.featureId,
+    feature.title,
+    feature.description,
+    feature.phase,
+    feature.status,
+    feature.assignee,
+    feature.planDocument,
+    feature.notes,
+    feature.categoryTitle,
+  ];
+  return parts
+    .filter((p) => p && p !== '-')
+    .join(' ')
+    .toLowerCase();
+}
+
+function applySearch(features) {
+  const q = normalizeQuery(uiState.searchQuery);
+  if (!q) return features;
+  const terms = q.split(/\s+/).filter(Boolean);
+  return features.filter((f) => {
+    const haystack = featureSearchText(f);
+    return terms.every((t) => haystack.includes(t));
+  });
 }
 
 function renderCard(feature, categoryTitle) {
@@ -738,6 +777,21 @@ document.getElementById('assignee').addEventListener('change', function () {
 
 document.getElementById('newCategory').addEventListener('input', updateFeatureIdFromCategory);
 document.getElementById('newCategory').addEventListener('blur', updateFeatureIdFromCategory);
+
+const searchEl = document.getElementById('searchFeatures');
+if (searchEl) {
+  searchEl.addEventListener('input', () => {
+    uiState.searchQuery = searchEl.value;
+    renderColumns();
+  });
+  searchEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      searchEl.value = '';
+      uiState.searchQuery = '';
+      renderColumns();
+    }
+  });
+}
 
 load();
 initConfigUi();
