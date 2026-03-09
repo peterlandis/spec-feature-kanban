@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Features Kanban – AgentLens</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>Features Kanban</h1>
+    <p class="subtitle" id="featuresSubtitle">Loading FEATURES.md…</p>
+
+    <div class="file-selector" aria-label="Select FEATURES.md file">
+      <select id="featuresFileSelect" class="select" title="Select a FEATURES.md file"></select>
+      <button type="button" class="btn btn-secondary" id="applyFeaturesFile">Use File</button>
+      <button type="button" class="btn btn-secondary" id="browseFeaturesFile">Browse…</button>
+      <button type="button" class="btn btn-secondary" id="createFeaturesFile">Create File…</button>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn btn-primary" id="createFeature">+ Create New Feature</button>
+      <button type="button" class="btn btn-secondary" id="addCategory">+ Add Category</button>
+      <button type="button" class="btn btn-secondary" id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <main class="kanban">
+    <div class="columns" id="columns"></div>
+  </main>
+
+  <div class="modal" id="featureModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modalTitle">Create Feature</h2>
+        <button type="button" class="close" id="closeModal">&times;</button>
+      </div>
+      <form id="featureForm">
+        <input type="hidden" id="editFeatureId" value="">
+        <div class="form-group">
+          <label for="category">Category</label>
+          <select id="category">
+            <option value="">-- Select or type new --</option>
+          </select>
+          <input type="text" id="newCategory" placeholder="Or enter new category name" class="mt-1" style="display:none">
+        </div>
+        <div class="form-group">
+          <label for="featureId">Feature ID</label>
+          <input type="text" id="featureId" placeholder="Auto-filled when category selected" required>
+        </div>
+        <div class="form-group">
+          <label for="title">Title</label>
+          <input type="text" id="title" placeholder="Feature title" required>
+        </div>
+        <div class="form-group">
+          <label for="description">Description</label>
+          <textarea id="description" rows="3" placeholder="Feature description"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="phase">Phase</label>
+          <input type="text" id="phase" placeholder="e.g. MVP or -">
+        </div>
+        <div class="form-group">
+          <label for="status">Status</label>
+          <select id="status">
+            <option value="📋 Planned">📋 Planned</option>
+            <option value="🔨 WorkInProgress">🔨 WorkInProgress</option>
+            <option value="🧪 Testing">🧪 Testing</option>
+            <option value="🟢 ReadyToMerge">🟢 ReadyToMerge</option>
+            <option value="✅ Complete">✅ Complete</option>
+            <option value="🚫 Blocked">🚫 Blocked</option>
+            <option value="⏸️ Paused">⏸️ Paused</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="assignee">Assignee</label>
+          <select id="assignee">
+            <option value="-">-</option>
+          </select>
+          <input type="text" id="assigneeOther" placeholder="Enter new assignee" class="mt-1" style="display:none">
+        </div>
+        <div class="form-group">
+          <label for="planDocument">Plan Document</label>
+          <input type="text" id="planDocument" placeholder="-">
+        </div>
+        <div class="form-group">
+          <label for="notes">Notes</label>
+          <textarea id="notes" rows="2" placeholder="Optional notes"></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelModal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
