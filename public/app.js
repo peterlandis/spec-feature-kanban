@@ -353,12 +353,19 @@ function renderColumns() {
 
   for (const col of columns) {
     const colEl = document.createElement('div');
-    colEl.className = 'column';
     colEl.dataset.column = col.key;
 
     const isCategoryColumn = col.key !== COL_WIP && col.key !== COL_COMPLETE;
     const cat = isCategoryColumn ? state.categories.find((c) => c.title === col.key) : null;
     const hasAnyFeaturesInCategory = !!(isCategoryColumn && cat && (cat.features || []).length > 0);
+    const hasAnyNonDefaultFeaturesInCategory = !!(
+      isCategoryColumn &&
+      cat &&
+      (cat.features || []).some((f) => f.status !== '🔨 WorkInProgress' && f.status !== '✅ Complete')
+    );
+    const isVisuallyEmptyCategoryColumn = !!(isCategoryColumn && cat && !hasAnyNonDefaultFeaturesInCategory);
+
+    colEl.className = `column${isVisuallyEmptyCategoryColumn ? ' is-empty' : ''}`;
 
     colEl.innerHTML = `
       <div class="column-header ${col.css}">
@@ -379,6 +386,18 @@ function renderColumns() {
     for (const f of features) {
       const displayCategory = col.key === COL_WIP || col.key === COL_COMPLETE ? f.categoryTitle : col.key;
       cardsContainer.appendChild(renderCard(f, displayCategory));
+    }
+
+    if (isVisuallyEmptyCategoryColumn) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'column-empty';
+      emptyEl.innerHTML = '<button type="button" class="btn btn-secondary empty-create">+ Create New Feature</button>';
+      emptyEl.querySelector('button').addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openCreateModal(col.key);
+      });
+      cardsContainer.appendChild(emptyEl);
     }
 
     cardsContainer.addEventListener('dragover', (e) => {
@@ -453,7 +472,10 @@ async function persist() {
   });
 }
 
-function openCreateModal() {
+function openCreateModal(preselectedCategoryTitleOrEvent) {
+  const preselectedCategoryTitle =
+    typeof preselectedCategoryTitleOrEvent === 'string' ? preselectedCategoryTitleOrEvent : null;
+
   document.getElementById('modalTitle').textContent = 'Create New Feature';
   document.getElementById('editFeatureId').value = '';
   document.getElementById('featureId').value = '';
@@ -470,9 +492,13 @@ function openCreateModal() {
   for (const c of state.categories) {
     sel.appendChild(new Option(c.title, c.title));
   }
-  sel.value = '';
+  sel.value =
+    preselectedCategoryTitle && state.categories.some((c) => c.title === preselectedCategoryTitle)
+      ? preselectedCategoryTitle
+      : '';
   document.getElementById('newCategory').value = '';
   document.getElementById('newCategory').style.display = 'block';
+  sel.dispatchEvent(new Event('change'));
 
   populateAssigneeList();
   document.getElementById('assignee').value = '-';

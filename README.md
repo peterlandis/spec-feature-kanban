@@ -45,7 +45,7 @@ The Kanban UI provides a visual way to manage the feature tracking document with
 | **Mark complete** | Drag a card to the "✅ Completed" column |
 | **Start work** | Drag to "🔨 Work In Progress" |
 | **Reassign category** | Drag to another category column |
-| **Create feature** | Click "+ Create New Feature" |
+| **Create feature** | Click "+ Create New Feature" (or hover an empty category column to quick-create into it) |
 | **Edit feature** | Click "Edit" on any card |
 | **Delete feature** | Click "Delete" on any card |
 | **Add category** | Click "+ Add Category" |

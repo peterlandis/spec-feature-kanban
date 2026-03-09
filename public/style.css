@@ -209,6 +209,19 @@ body {
   min-height: 80px;
 }
 
+.column-empty {
+  display: none;
+  padding: 0.5rem;
+}
+
+.column.is-empty:hover .column-empty {
+  display: flex;
+}
+
+.empty-create {
+  width: 100%;
+}
+
 .column-cards.drag-over {
   background: rgba(88, 166, 255, 0.08);
   border-radius: 4px;
