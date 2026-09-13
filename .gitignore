@@ -1,1 +1,6 @@
 .features-kanban.json
+.features-workflow.json
+.features-secrets.json
+.features-models.json
+.features-agent-store/
+.features-node/

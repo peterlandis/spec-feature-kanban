@@ -16,11 +16,21 @@ In other words, the UI is just a convenience layer—the markdown file is the ar
 ## Launching the Features Manager
 
 ```bash
-npm install
-npm start
+make run
 ```
 
-Open **http://localhost:3456** in your browser. If port 3456 is already in use, the server automatically tries the next available port (3457, 3458, etc.) and prints the URL in the terminal.
+That installs Node dependencies if needed, starts the server, and opens **http://localhost:3456**. If port 3456 is already in use, the server automatically tries the next available port (3457, 3458, etc.) and prints the URL in the terminal.
+
+```bash
+PORT=4000 make run
+FEATURES_PATH=specifications/FEATURES.md make run
+```
+
+### Cursor API key (for planning agents)
+
+Click **Cursor key** in the header, paste a key from [Cursor Dashboard → API Keys](https://cursor.com/dashboard/api), and click **Save and use**. The app stores it locally in gitignored `.features-secrets.json` and applies it immediately — no terminal `export` and no restart. The raw key is never shown back in the UI.
+
+On launch the app pulls the latest Cursor models for that key. Pick one in **Cursor key**, or click **Refresh models**.
 
 ### Alternative: Custom Port
 
@@ -97,6 +107,9 @@ When `FEATURES_PATH` is set, the UI will run in “fixed file” mode (you can�
 - `GET /api/features-files` – List candidate tracking files under the project root (based on format validation)
 - `POST /api/browse-features` – Browse for a tracking file (macOS only)
 - `POST /api/create-features-file` – Create a new template tracking file (project-relative path) and switch to it
+- `POST /api/features/:featureId/ship` – Approve review artifacts and create or reuse a draft PR via `gh` (requires `{ confirmed: true }`; does not merge)
+- `PUT /api/github-settings` – Save a GitHub token locally for Ship (`{ token }`; never returned to the browser)
+- `DELETE /api/github-settings` – Remove the GitHub token saved in the app
 
 ## Architecture & Design
 
