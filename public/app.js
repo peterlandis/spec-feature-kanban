@@ -37,6 +37,14 @@ let configState = {
   githubConfigured: false,
   githubTokenHint: '',
   githubTokenSource: 'none',
+  xaiConfigured: false,
+  xaiKeyHint: '',
+  xaiKeySource: 'none',
+  openaiConfigured: false,
+  openaiKeyHint: '',
+  openaiKeySource: 'none',
+  jarvisVoiceId: 'local:daniel',
+  jarvisVoices: [],
 };
 
 let workspacePollTimer = null;
@@ -190,6 +198,141 @@ function applyGithubConfig(cfg) {
   if ('githubTokenSource' in cfg) configState.githubTokenSource = cfg.githubTokenSource || 'none';
 }
 
+function syncJarvisVoiceWindow() {
+  window.jarvisVoiceConfig = {
+    voiceId: configState.jarvisVoiceId,
+    voices: configState.jarvisVoices,
+    xaiConfigured: configState.xaiConfigured,
+    openaiConfigured: configState.openaiConfigured,
+  };
+}
+
+function applyXaiConfig(cfg) {
+  if (!cfg) return;
+  if ('xaiConfigured' in cfg) configState.xaiConfigured = !!cfg.xaiConfigured;
+  if ('xaiKeyHint' in cfg) configState.xaiKeyHint = cfg.xaiKeyHint || '';
+  if ('xaiKeySource' in cfg) configState.xaiKeySource = cfg.xaiKeySource || 'none';
+  if ('openaiConfigured' in cfg) configState.openaiConfigured = !!cfg.openaiConfigured;
+  if ('openaiKeyHint' in cfg) configState.openaiKeyHint = cfg.openaiKeyHint || '';
+  if ('openaiKeySource' in cfg) configState.openaiKeySource = cfg.openaiKeySource || 'none';
+  if ('jarvisVoiceId' in cfg) configState.jarvisVoiceId = cfg.jarvisVoiceId || 'local:daniel';
+  if ('jarvisVoices' in cfg) {
+    configState.jarvisVoices = Array.isArray(cfg.jarvisVoices) ? cfg.jarvisVoices : [];
+  }
+  syncJarvisVoiceWindow();
+}
+
+function selectedJarvisVoice() {
+  const select = document.getElementById('jarvisVoiceSelect');
+  const id = (select && select.value) || configState.jarvisVoiceId || 'local:daniel';
+  return (configState.jarvisVoices || []).find((voice) => voice.id === id) || {
+    id,
+    provider: id.startsWith('openai:') ? 'openai' : id.startsWith('grok:') ? 'grok' : id.startsWith('browser:') ? 'browser' : 'local',
+    setup: id.startsWith('openai:') ? 'openai' : id.startsWith('grok:') ? 'xai' : 'none',
+    hint: 'Choose a voice. Setup for that voice appears below.',
+    label: id,
+  };
+}
+
+function renderJarvisVoiceSelect() {
+  const select = document.getElementById('jarvisVoiceSelect');
+  if (!select) return;
+  const voices = configState.jarvisVoices || [];
+  const current = configState.jarvisVoiceId || 'local:daniel';
+  const groups = [];
+  voices.forEach((voice) => {
+    let group = groups.find((item) => item.label === voice.group);
+    if (!group) {
+      group = { label: voice.group || 'Other', voices: [] };
+      groups.push(group);
+    }
+    group.voices.push(voice);
+  });
+  select.innerHTML = '';
+  groups.forEach((group) => {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group.label;
+    group.voices.forEach((voice) => {
+      const suffix = voice.provider === 'local' && voice.available === false
+        ? ' (not installed)'
+        : voice.provider === 'grok' && !configState.xaiConfigured
+          ? ' (needs xAI key)'
+          : voice.provider === 'openai' && !configState.openaiConfigured
+            ? ' (needs OpenAI key)'
+            : '';
+      optgroup.appendChild(new Option(`${voice.label}${suffix}`, voice.id));
+    });
+    select.appendChild(optgroup);
+  });
+  if (current && !voices.some((voice) => voice.id === current)) {
+    select.appendChild(new Option(current, current));
+  }
+  select.value = current;
+}
+
+function renderXaiSettingsStatus() {
+  renderJarvisVoiceSelect();
+  const voice = selectedJarvisVoice();
+  const hintEl = document.getElementById('jarvisVoiceHint');
+  const localBox = document.getElementById('jarvisSetupNone');
+  const grokBox = document.getElementById('jarvisSetupGrok');
+  const openaiBox = document.getElementById('jarvisSetupOpenai');
+  const localCopy = document.getElementById('jarvisSetupNoneCopy');
+  const statusEl = document.getElementById('xaiSettingsStatus');
+  const openaiStatusEl = document.getElementById('openaiSettingsStatus');
+  if (hintEl) hintEl.textContent = voice.hint || 'Choose a voice. Setup for that voice appears below.';
+  if (localBox) localBox.hidden = voice.setup !== 'none';
+  if (grokBox) grokBox.hidden = voice.setup !== 'xai';
+  if (openaiBox) openaiBox.hidden = voice.setup !== 'openai';
+  if (localCopy) {
+    if (voice.provider === 'local' && voice.available === false) {
+      localCopy.textContent = `${voice.label} is not installed on this Mac. Download it in System Settings → Spoken Content, or pick another voice.`;
+    } else {
+      localCopy.textContent = voice.hint || 'This voice needs no extra setup.';
+    }
+  }
+  if (statusEl) {
+    if (!configState.xaiConfigured) {
+      statusEl.textContent = 'No xAI key saved yet. Paste a key to use this Grok voice.';
+    } else {
+      const hint = configState.xaiKeyHint ? ` ending in ${configState.xaiKeyHint}` : '';
+      const source = configState.xaiKeySource === 'env'
+        ? 'from your terminal environment'
+        : 'saved in this app';
+      statusEl.textContent = `Grok speech ready${hint} (${source}).`;
+    }
+  }
+  if (!openaiStatusEl) return;
+  if (!configState.openaiConfigured) {
+    openaiStatusEl.textContent = 'No OpenAI key saved yet. Paste a key to use this OpenAI voice.';
+    return;
+  }
+  const openaiHint = configState.openaiKeyHint ? ` ending in ${configState.openaiKeyHint}` : '';
+  const openaiSource = configState.openaiKeySource === 'env'
+    ? 'from your terminal environment'
+    : 'saved in this app';
+  openaiStatusEl.textContent = `OpenAI speech ready${openaiHint} (${openaiSource}).`;
+}
+
+async function saveJarvisVoiceChoice(voiceId) {
+  const res = await fetch(`${API}/xai-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voiceId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save Jarvis voice');
+  }
+  applyXaiConfig(await res.json());
+  if (!configState.jarvisVoices.length) {
+    await initConfigUi();
+  } else {
+    renderXaiSettingsStatus();
+  }
+  if (typeof window.syncJarvis === 'function') window.syncJarvis();
+}
+
 function formatModelsUpdatedAt(iso) {
   if (!iso) return '';
   const date = new Date(iso);
@@ -273,7 +416,7 @@ function renderGithubSettingsStatus() {
 }
 
 function setSettingsTab(tab) {
-  uiState.settingsTab = tab === 'github' ? 'github' : 'ide';
+  uiState.settingsTab = tab === 'github' || tab === 'jarvis' ? tab : 'ide';
   document.querySelectorAll('.settings-tab').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.settingsTab === uiState.settingsTab);
   });
@@ -297,8 +440,23 @@ function openSettings(tab) {
       ? `Saved token ending in ${configState.githubTokenHint}`
       : 'ghp_… or github_pat_…';
   }
+  const xaiInput = document.getElementById('xaiApiKey');
+  if (xaiInput) {
+    xaiInput.value = '';
+    xaiInput.placeholder = configState.xaiKeyHint
+      ? `Saved key ending in ${configState.xaiKeyHint}`
+      : 'xai-…';
+  }
+  const openaiInput = document.getElementById('openaiApiKey');
+  if (openaiInput) {
+    openaiInput.value = '';
+    openaiInput.placeholder = configState.openaiKeyHint
+      ? `Saved key ending in ${configState.openaiKeyHint}`
+      : 'sk-…';
+  }
   renderCursorSettingsStatus();
   renderGithubSettingsStatus();
+  renderXaiSettingsStatus();
   setSettingsTab(tab || uiState.settingsTab || 'ide');
   document.getElementById('settings').hidden = false;
   if (configState.cursorConfigured) {
@@ -341,6 +499,86 @@ async function saveGithubSettings(event) {
     fetchWorkspace(uiState.workspaceFeatureId).then(renderWorkspace).catch(() => {});
   }
   toast('GitHub token saved. You can create a draft PR now.');
+}
+
+async function saveXaiSettings(event) {
+  event.preventDefault();
+  const apiKey = document.getElementById('xaiApiKey').value.trim();
+  const voiceSelect = document.getElementById('jarvisVoiceSelect');
+  const voiceId = (voiceSelect && voiceSelect.value) || configState.jarvisVoiceId;
+  const payload = { voiceId };
+  if (apiKey) payload.apiKey = apiKey;
+  if (!apiKey && !configState.xaiConfigured) {
+    toast('Paste an xAI API key first', 'error');
+    return;
+  }
+  const res = await fetch(`${API}/xai-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save xAI key');
+  }
+  document.getElementById('xaiApiKey').value = '';
+  applyXaiConfig(await res.json());
+  renderXaiSettingsStatus();
+  toast('xAI key saved. Preview the Grok voice.');
+}
+
+async function clearXaiSettings() {
+  const ok = window.confirm('Remove the xAI key saved in this app?');
+  if (!ok) return;
+  const res = await fetch(`${API}/xai-settings`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to remove xAI key');
+  }
+  document.getElementById('xaiApiKey').value = '';
+  applyXaiConfig(await res.json());
+  renderXaiSettingsStatus();
+  toast('Saved xAI key removed');
+}
+
+async function saveOpenAiSettings(event) {
+  event.preventDefault();
+  const apiKey = document.getElementById('openaiApiKey').value.trim();
+  const voiceSelect = document.getElementById('jarvisVoiceSelect');
+  const voiceId = (voiceSelect && voiceSelect.value) || configState.jarvisVoiceId;
+  const payload = { voiceId };
+  if (apiKey) payload.apiKey = apiKey;
+  if (!apiKey && !configState.openaiConfigured) {
+    toast('Paste an OpenAI API key first', 'error');
+    return;
+  }
+  const res = await fetch(`${API}/openai-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save OpenAI key');
+  }
+  document.getElementById('openaiApiKey').value = '';
+  applyXaiConfig(await res.json());
+  renderXaiSettingsStatus();
+  toast('OpenAI key saved. Preview the OpenAI voice.');
+}
+
+async function clearOpenAiSettings() {
+  const ok = window.confirm('Remove the OpenAI key saved in this app?');
+  if (!ok) return;
+  const res = await fetch(`${API}/openai-settings`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to remove OpenAI key');
+  }
+  document.getElementById('openaiApiKey').value = '';
+  applyXaiConfig(await res.json());
+  renderXaiSettingsStatus();
+  toast('Saved OpenAI key removed');
 }
 
 async function clearGithubSettings() {
@@ -503,10 +741,20 @@ async function initConfigUi() {
       githubConfigured: !!cfg.githubConfigured,
       githubTokenHint: cfg.githubTokenHint || '',
       githubTokenSource: cfg.githubTokenSource || 'none',
+      xaiConfigured: !!cfg.xaiConfigured,
+      xaiKeyHint: cfg.xaiKeyHint || '',
+      xaiKeySource: cfg.xaiKeySource || 'none',
+      openaiConfigured: !!cfg.openaiConfigured,
+      openaiKeyHint: cfg.openaiKeyHint || '',
+      openaiKeySource: cfg.openaiKeySource || 'none',
+      jarvisVoiceId: cfg.jarvisVoiceId || 'local:daniel',
+      jarvisVoices: Array.isArray(cfg.jarvisVoices) ? cfg.jarvisVoices : [],
     };
+    syncJarvisVoiceWindow();
     renderFeaturesFileSelector();
     renderCursorSettingsStatus();
     renderGithubSettingsStatus();
+    renderXaiSettingsStatus();
     if (configState.cursorConfigured) {
       refreshCursorModels({ silent: true }).catch(() => {});
     }
@@ -682,6 +930,41 @@ function renderGraphPage() {
   syncGraphModeButtons();
   if (mode3d) renderFeatureGraph3d();
   else renderFeatureGraph();
+  if (typeof window.syncJarvis === 'function') window.syncJarvis();
+}
+
+function jarvisSnapshot() {
+  return {
+    features: applySearch(getAllFeatures()),
+    graph: state.graph || { edges: [] },
+  };
+}
+
+function jarvisHighlight(ids) {
+  const id = Array.isArray(ids) && ids.length ? ids[0] : null;
+  if (!id) return;
+  if (uiState.graphMode === '3d') pauseGraph3dSpin(id);
+  else setGraphFocus(id);
+}
+
+async function jarvisExecuteConfirm(action, featureId) {
+  const paths = {
+    startPlanning: '/start-planning',
+    approvePlan: '/approve-plan',
+    startImplement: '/implement',
+  };
+  const path = paths[action];
+  if (!path) throw new Error('That gate is not available from Jarvis.');
+  const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Confirm failed');
+  }
+  await load();
 }
 
 function renderMainView() {
@@ -3193,6 +3476,7 @@ async function load() {
   try {
     state = await fetchFeatures();
     renderMainView();
+    if (typeof window.syncJarvis === 'function') window.syncJarvis();
   } catch (err) {
     toast(err.message || 'Failed to load', 'error');
   }
@@ -3291,6 +3575,26 @@ document.getElementById('clearCursorSettings').addEventListener('click', () => {
 });
 document.getElementById('refreshCursorModels').addEventListener('click', () => {
   refreshCursorModels().catch((err) => toast(err.message || 'Failed to refresh Cursor models', 'error'));
+});
+document.getElementById('jarvisVoiceSelect')?.addEventListener('change', () => {
+  const voiceId = document.getElementById('jarvisVoiceSelect').value;
+  configState.jarvisVoiceId = voiceId;
+  syncJarvisVoiceWindow();
+  renderXaiSettingsStatus();
+  if (typeof window.syncJarvis === 'function') window.syncJarvis();
+  saveJarvisVoiceChoice(voiceId).catch((err) => toast(err.message || 'Failed to save voice', 'error'));
+});
+document.getElementById('xaiSettingsForm')?.addEventListener('submit', (event) => {
+  saveXaiSettings(event).catch((err) => toast(err.message || 'Failed to save xAI key', 'error'));
+});
+document.getElementById('clearXaiSettings')?.addEventListener('click', () => {
+  clearXaiSettings().catch((err) => toast(err.message || 'Failed to remove xAI key', 'error'));
+});
+document.getElementById('openaiSettingsForm')?.addEventListener('submit', (event) => {
+  saveOpenAiSettings(event).catch((err) => toast(err.message || 'Failed to save OpenAI key', 'error'));
+});
+document.getElementById('clearOpenaiSettings')?.addEventListener('click', () => {
+  clearOpenAiSettings().catch((err) => toast(err.message || 'Failed to remove OpenAI key', 'error'));
 });
 document.getElementById('closeModal').addEventListener('click', () =>
   document.getElementById('featureModal').classList.remove('open')

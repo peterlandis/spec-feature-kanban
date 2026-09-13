@@ -37,17 +37,53 @@
       <p class="process-lead">Spec-driven lifecycle across all tracked features. Click a feature to open its workspace. This view never starts agents.</p>
       <div class="process-graph" id="processGraph" role="region" aria-label="Workflow process graph"></div>
     </div>
-    <div class="graph-view" id="graphView" hidden aria-live="polite">
+    <div class="graph-view" id="graphView" hidden>
       <div class="graph-toolbar">
         <p class="graph-lead" id="graphLead">A network of every tracked feature. Scroll to zoom, drag to pan, hover a node to see its links, click to open its workspace. This view never starts agents.</p>
         <div class="view-toggle graph-mode-toggle" role="group" aria-label="Graph projection">
           <button type="button" class="btn btn-secondary is-active" id="graphMode2d" aria-pressed="true">2D</button>
           <button type="button" class="btn btn-secondary" id="graphMode3d" aria-pressed="false">3D</button>
+          <button type="button" class="btn btn-secondary" id="toggleJarvis" aria-pressed="false">Jarvis</button>
         </div>
       </div>
       <div class="graph-legend" id="graphLegend" aria-label="Edge type legend"></div>
-      <div class="feature-graph" id="featureGraph" role="region" aria-label="Feature relationship knowledge graph"></div>
-      <div class="feature-graph feature-graph-3d" id="featureGraph3d" hidden role="region" aria-label="Three-dimensional feature knowledge graph"></div>
+      <div class="graph-stage">
+        <div class="feature-graph" id="featureGraph" role="region" aria-label="Feature relationship knowledge graph"></div>
+        <div class="feature-graph feature-graph-3d" id="featureGraph3d" hidden role="region" aria-label="Three-dimensional feature knowledge graph"></div>
+        <aside class="jarvis-hud" id="jarvisHud" hidden>
+          <div class="jarvis-hud-top">
+            <span class="jarvis-online-dot" aria-hidden="true"></span>
+            <span>System online</span>
+            <time id="jarvisClock"></time>
+          </div>
+          <p class="jarvis-wordmark">J.A.R.V.I.S.</p>
+          <button type="button" class="jarvis-orb" id="jarvisTalk" aria-pressed="false" aria-label="Push to talk">
+            <span class="jarvis-orb-ring"></span>
+            <span class="jarvis-orb-core"></span>
+          </button>
+          <p class="jarvis-state" id="jarvisState" aria-live="polite">Idle — click the orb to talk, or type below.</p>
+          <div class="jarvis-output" id="jarvisOutput" aria-label="Jarvis output">
+            <div class="jarvis-output-head">
+              <span>Jarvis output</span>
+              <span class="jarvis-source" id="jarvisSource">graph snapshot</span>
+            </div>
+            <div class="jarvis-messages" id="jarvisMessages"></div>
+          </div>
+          <div class="jarvis-confirm" id="jarvisConfirm" hidden>
+            <p id="jarvisConfirmText"></p>
+            <div class="jarvis-confirm-actions">
+              <button type="button" class="btn btn-secondary" id="jarvisConfirmCancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="jarvisConfirmOk">Confirm</button>
+            </div>
+          </div>
+          <form class="jarvis-compose" id="jarvisForm">
+            <label class="visually-hidden" for="jarvisInput">Ask Jarvis</label>
+            <input type="text" id="jarvisInput" placeholder="Ask about the graph…" autocomplete="off">
+            <button type="submit" class="btn btn-primary" id="jarvisSend">Send</button>
+          </form>
+          <p class="jarvis-footnote">Answers use the live feature graph only. Coding agents still need a confirm.</p>
+        </aside>
+      </div>
     </div>
   </main>
 
@@ -258,6 +294,7 @@
       <div class="settings-nav" role="tablist">
         <button type="button" class="settings-tab is-active" data-settings-tab="ide" role="tab">IDE tools</button>
         <button type="button" class="settings-tab" data-settings-tab="github" role="tab">GitHub</button>
+        <button type="button" class="settings-tab" data-settings-tab="jarvis" role="tab">Jarvis</button>
       </div>
       <div class="settings-body">
         <section class="settings-pane is-active" data-settings-pane="ide">
@@ -341,6 +378,71 @@
             </form>
           </article>
         </section>
+        <section class="settings-pane" data-settings-pane="jarvis">
+          <p class="settings-lead">Jarvis briefs the Graph from live feature data. It does not start coding agents without a confirm. Transcripts stay in this browser tab.</p>
+          <article class="integration-card">
+            <div class="integration-card-head">
+              <div>
+                <h3>Voice Jarvis</h3>
+                <p>Push-to-talk orb on Graph. Answers come from the CORE-017 snapshot, not a second paid coding vendor.</p>
+              </div>
+              <span class="integration-status" id="jarvisCardStatus">Off</span>
+            </div>
+            <label class="jarvis-setting">
+              <input type="checkbox" id="jarvisEnablePref">
+              Show Jarvis on Graph
+            </label>
+            <label class="jarvis-setting">
+              <input type="checkbox" id="jarvisVoicePref" checked>
+              Speak replies
+            </label>
+            <div class="form-group">
+              <label for="jarvisVoiceSelect">Voice</label>
+              <select id="jarvisVoiceSelect"></select>
+            </div>
+            <p class="jarvis-voice-hint" id="jarvisVoiceHint">Choose a voice. Setup for that voice appears below.</p>
+            <div class="jarvis-voice-setup" id="jarvisSetupNone">
+              <p class="settings-copy" id="jarvisSetupNoneCopy">This voice needs no extra setup.</p>
+            </div>
+            <div class="jarvis-voice-setup" id="jarvisSetupGrok" hidden>
+              <p class="settings-status" id="xaiSettingsStatus">No xAI key saved yet. Paste a key to use this Grok voice.</p>
+              <form id="xaiSettingsForm">
+                <div class="form-group">
+                  <label for="xaiApiKey">xAI API key</label>
+                  <input type="password" id="xaiApiKey" autocomplete="off" placeholder="xai-…">
+                </div>
+                <p class="settings-copy">
+                  Get a key from
+                  <a href="https://console.x.ai/" target="_blank" rel="noopener noreferrer">console.x.ai</a>.
+                  Speech only — not a coding backend.
+                </p>
+                <div class="form-actions">
+                  <button type="button" class="btn btn-secondary" id="clearXaiSettings">Remove saved key</button>
+                  <button type="submit" class="btn btn-primary">Save xAI key</button>
+                </div>
+              </form>
+            </div>
+            <div class="jarvis-voice-setup" id="jarvisSetupOpenai" hidden>
+              <p class="settings-status" id="openaiSettingsStatus">No OpenAI key saved yet. Paste a key to use this OpenAI voice.</p>
+              <form id="openaiSettingsForm">
+                <div class="form-group">
+                  <label for="openaiApiKey">OpenAI API key</label>
+                  <input type="password" id="openaiApiKey" autocomplete="off" placeholder="sk-…">
+                </div>
+                <p class="settings-copy">
+                  Get a key from
+                  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a>.
+                  Speech only — not a coding backend.
+                </p>
+                <div class="form-actions">
+                  <button type="button" class="btn btn-secondary" id="clearOpenaiSettings">Remove saved key</button>
+                  <button type="submit" class="btn btn-primary">Save OpenAI key</button>
+                </div>
+              </form>
+            </div>
+            <button type="button" class="btn btn-secondary" id="jarvisVoicePreview">Preview voice</button>
+          </article>
+        </section>
       </div>
     </div>
   </div>
@@ -349,5 +451,6 @@
 
   <script src="markdown.js"></script>
   <script src="app.js"></script>
+  <script src="jarvis.js"></script>
 </body>
 </html>

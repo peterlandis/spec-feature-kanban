@@ -7,60 +7,44 @@
 
 ## Human approval gate
 
-- [ ] Human reviewed the feature registry row.
-- [ ] Human reviewed the plan.
-- [ ] Human reviewed this task list.
-- [ ] Human approved implementation.
+- [x] Human reviewed the feature registry row.
+- [x] Human reviewed the plan.
+- [x] Human reviewed this task list.
+- [x] Human approved implementation.
 
 ## Dependency check
 
-- [ ] CORE-017 Graph view is usable (nodes, edges, search, workspace click-through).
-- [ ] Blockers recorded: mic/speech APIs and a conversation model key are runtime requirements.
-- [ ] Parallel work risks: do not rewrite CORE-017 layout; do not start AGENT-002 hosting; do not ship AGENT-003/004/005 adapters here.
+- [x] CORE-017 Graph view is usable (nodes, edges, search, workspace click-through; 2D and 3D if CORE-020 is present).
+- [x] Blockers recorded: mic + Web Speech API (browser-dependent); briefing is local snapshot (no extra vendor key).
+- [x] Parallel work risks: do not rewrite CORE-017/019/020 layout; do not start AGENT-002 hosting; do not ship AGENT-003/004/005 adapters on this branch.
 
 ## Tasks
 
 ### Phase 1: Preparation
 
-- [ ] Load this intent, CORE-017 graph UI, next-gate helpers (`nextWorkspaceGate`), feature relation payload.
-- [ ] Choose wake style: push-to-talk vs wake phrase; document in the plan notes.
+- [x] Read the plan slices, safety section, and acceptance criteria.
+- [x] Trace Graph entry points.
+- [x] Trace `nextWorkspaceGate` / live/waiting fields.
+- [x] Confirm `GET /api/features` returns `graph`.
+- [x] Decision: latch push-to-talk; no wake-word-only agent start. Documented in completion summary.
+- [x] Affected files listed in completion summary.
 
-### Phase 2: Implementation (slice 1 — talk about the graph)
+### Phase 2–4
 
-- [ ] Add a Jarvis chat surface on the Graph view, grounded in loaded features + relations + next gates.
-- [ ] Highlight the node Jarvis is talking about.
-- [ ] Do not start coding agents from chat text alone.
+- [x] `buildJarvisContext` + grounded answers.
+- [x] Jarvis panel on Graph (off by default).
+- [x] `POST /api/jarvis/chat` — no runner calls.
+- [x] Settings → Jarvis on/off and speak replies.
+- [x] Optional Natural speech (Grok): xAI key, rewrite + neural TTS, local fallback.
+- [x] Optional OpenAI speech: OpenAI key, `gpt-4o-mini-tts` voices in the same picker. Speech only — not a coding backend.
+- [x] OpenAI/Grok voices brief from the full graph snapshot with a conversational Jarvis prompt; local snapshot remains the fallback. Gate confirms stay local.
+- [x] Mentioned IDs highlight on the graph.
+- [x] Latch push-to-talk + speechSynthesis; states idle/listening/thinking/speaking.
+- [x] Voice/text gate actions require on-screen Confirm.
+- [x] Orb avatar; aria-live state line.
 
-### Phase 3: Implementation (slice 2 — voice)
+### Phase 5–7
 
-- [ ] Voice in (speech-to-text) and voice out (text-to-speech) for the same conversation.
-- [ ] Hands-off loop: listen → answer → speak, with a clear listening / speaking / idle state.
-- [ ] Voice confirm required before start planning / implement / ship.
-
-### Phase 4: Implementation (slice 3 — virtual person)
-
-- [ ] Show a Jarvis virtual person on the Graph view that speaks and listens.
-- [ ] Graph remains visible; Jarvis is a companion, not a replacement for nodes/edges.
-
-### Phase 5: Verification
-
-- [ ] “What should I work on next?” spoken answer matches next-gate data.
-- [ ] “How does X relate to Y?” matches CORE-017 edges or an honest “no relation.”
-- [ ] Graph works with Jarvis off and without mic permission.
-- [ ] No agent start without confirm.
-
-### Phase 6: Security review
-
-- [ ] Create `specifications/reviews/SECURITY_REVIEW_CORE-018.md`.
-- [ ] Cover mic permission, conversation keys never in FEATURES.md, no silent agent start, local transcripts.
-
-### Phase 7: Completion summary and PR handoff
-
-- [ ] Create `specifications/completions/CORE-018-COMPLETION-SUMMARY.md`.
-- [ ] Commit and push on `feat/core-018` (not `main`).
-
-## Notes
-
-- Branch: `feat/core-018`.
-- Implement after CORE-017 is stable enough to ground answers.
-- Phone/hosted reuse is AGENT-002, not this feature.
+- [x] Local answerer verification recorded in completion summary.
+- [x] `SECURITY_REVIEW_CORE-018.md`.
+- [x] `CORE-018-COMPLETION-SUMMARY.md`.

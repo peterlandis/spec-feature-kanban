@@ -31,7 +31,7 @@ import {
   writeText,
 } from './workflow/artifacts.js';
 import { cursorModel, isCursorConfigured } from './workflow/cursor-adapter.js';
-import { applyStoredSecrets, getCursorSetupStatus, getGithubSetupStatus, saveCursorSetup, saveGithubSetup } from './workflow/secrets.js';
+import { applyStoredSecrets, getCursorSetupStatus, getGithubSetupStatus, getOpenAiSetupStatus, getXaiSetupStatus, saveCursorSetup, saveGithubSetup, saveOpenAiSetup, saveXaiSetup } from './workflow/secrets.js';
 import { loadModelsCache, modelsPayload, refreshCursorModels } from './workflow/models.js';
 import {
   assertNoActiveRun,
@@ -54,6 +54,9 @@ import {
   flattenFeaturesFromCategories,
   loadPlanContentsForFeatures,
 } from './workflow/feature-relations.js';
+import { briefJarvis } from './workflow/jarvis-brief.js';
+import { buildJarvisContext } from './workflow/jarvis-context.js';
+import { listJarvisVoices, synthesizeJarvisSpeech } from './workflow/jarvis-voice.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = __dirname;
@@ -278,6 +281,9 @@ app.get('/api/config', (req, res) => {
     browseSupported: process.platform === 'darwin' && !process.env.FEATURES_PATH,
     ...getCursorSetupStatus(PROJECT_ROOT),
     ...getGithubSetupStatus(PROJECT_ROOT),
+    ...getXaiSetupStatus(PROJECT_ROOT),
+    ...getOpenAiSetupStatus(PROJECT_ROOT),
+    jarvisVoices: listJarvisVoices(),
     ...modelsPayload(),
     cursorConfigured: isCursorConfigured(),
     cursorModel: cursorModel(),
@@ -359,6 +365,76 @@ app.delete('/api/github-settings', (req, res) => {
   try {
     const status = saveGithubSetup(PROJECT_ROOT, { clear: true });
     res.json({ ok: true, ...status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** PUT /api/xai-settings - Save an xAI key for optional Grok Jarvis speech */
+app.put('/api/xai-settings', (req, res) => {
+  try {
+    const body = req.body || {};
+    saveXaiSetup(PROJECT_ROOT, {
+      apiKey: body.apiKey,
+      voiceId: body.voiceId,
+      clear: false,
+    });
+    res.json({
+      ok: true,
+      ...getXaiSetupStatus(PROJECT_ROOT),
+      ...getOpenAiSetupStatus(PROJECT_ROOT),
+      jarvisVoices: listJarvisVoices(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** DELETE /api/xai-settings - Remove the xAI key saved in the app */
+app.delete('/api/xai-settings', (req, res) => {
+  try {
+    saveXaiSetup(PROJECT_ROOT, { clear: true });
+    res.json({
+      ok: true,
+      ...getXaiSetupStatus(PROJECT_ROOT),
+      ...getOpenAiSetupStatus(PROJECT_ROOT),
+      jarvisVoices: listJarvisVoices(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** PUT /api/openai-settings - Save an OpenAI key for optional Jarvis speech */
+app.put('/api/openai-settings', (req, res) => {
+  try {
+    const body = req.body || {};
+    saveOpenAiSetup(PROJECT_ROOT, {
+      apiKey: body.apiKey,
+      voiceId: body.voiceId,
+      clear: false,
+    });
+    res.json({
+      ok: true,
+      ...getXaiSetupStatus(PROJECT_ROOT),
+      ...getOpenAiSetupStatus(PROJECT_ROOT),
+      jarvisVoices: listJarvisVoices(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** DELETE /api/openai-settings - Remove the OpenAI key saved in the app */
+app.delete('/api/openai-settings', (req, res) => {
+  try {
+    saveOpenAiSetup(PROJECT_ROOT, { clear: true });
+    res.json({
+      ok: true,
+      ...getXaiSetupStatus(PROJECT_ROOT),
+      ...getOpenAiSetupStatus(PROJECT_ROOT),
+      jarvisVoices: listJarvisVoices(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -614,6 +690,65 @@ app.get('/api/features', (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/jarvis/speak — local Mac, browser fallback, or optional Grok / OpenAI neural speech.
+ * Local `say` text is an execFile argument, never a shell string.
+ */
+app.post('/api/jarvis/speak', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const text = String(body.text || '');
+    const xai = getXaiSetupStatus(PROJECT_ROOT);
+    const { buffer, mime, voice, engine } = await synthesizeJarvisSpeech(text, {
+      voiceId: body.voiceId || xai.jarvisVoiceId,
+      natural: !!body.natural,
+    });
+    res.setHeader('Content-Type', mime);
+    res.setHeader('X-Jarvis-Voice', voice);
+    res.setHeader('X-Jarvis-Engine', engine || 'local');
+    res.send(buffer);
+  } catch (err) {
+    const status = err && (err.code === 'EMPTY' || err.code === 'NO_GROK' || err.code === 'NO_OPENAI') ? 400
+      : err && err.code === 'BROWSER' ? 409
+      : 501;
+    res.status(status).json({
+      error: err.message || 'Jarvis voice unavailable.',
+      fallback: true,
+    });
+  }
+});
+
+/**
+ * POST /api/jarvis/chat — brief from a frozen graph snapshot only.
+ * Grok / OpenAI voices get a conversational brief; otherwise local snapshot.
+ * Never starts planning, implement, or ship.
+ */
+app.post('/api/jarvis/chat', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const features = Array.isArray(body.features) ? body.features : [];
+    const graph = body.graph && typeof body.graph === 'object' ? body.graph : { edges: [] };
+    const context = buildJarvisContext(features, graph);
+    if (!context.nodes.length) {
+      return res.status(400).json({ error: 'Jarvis needs a live graph snapshot.' });
+    }
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const lastUser = [...messages].reverse().find((item) => item && item.role === 'user');
+    const result = await briefJarvis(lastUser && lastUser.content, context, {
+      voiceId: body.voiceId,
+      messages,
+    });
+    res.json({
+      reply: result.reply,
+      mentionIds: result.mentionIds || [],
+      confirm: result.confirm || null,
+      source: result.source || 'graph-snapshot',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Jarvis could not answer.' });
   }
 });
 
