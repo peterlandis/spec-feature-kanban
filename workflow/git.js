@@ -14,6 +14,7 @@ function runGit(cwd, args, { allowFail = false } = {}) {
       cwd,
       encoding: 'utf8',
       timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { ok: true, stdout: raw.trim() };
   } catch (err) {
@@ -36,7 +37,8 @@ export function currentBranch(cwd) {
 
 export function branchExists(cwd, name) {
   if (!name) return false;
-  return runGit(cwd, ['rev-parse', '--verify', name], { allowFail: true }).ok;
+  const ref = name.startsWith('refs/') ? name : `refs/heads/${name}`;
+  return runGit(cwd, ['rev-parse', '--verify', '--quiet', ref], { allowFail: true }).ok;
 }
 
 export function isWorkingTreeDirty(cwd) {
