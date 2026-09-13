@@ -1594,6 +1594,9 @@ const GRAPH3D_EDGE_COLORS = {
 
 function layoutFeatureNetwork3d(features, edges) {
   const count = features.length;
+  const spread = Math.min(440, 200 + (Math.sqrt(Math.max(1, count)) * 26));
+  const heightSpread = spread * 0.8;
+  const springScale = spread / 210;
   const nodes = features.map((feature, index) => {
     const golden = Math.PI * (3 - Math.sqrt(5));
     const y = count === 1 ? 0 : 1 - ((index / (count - 1)) * 2);
@@ -1604,9 +1607,9 @@ function layoutFeatureNetwork3d(features, edges) {
       feature,
       tone: graphNodeTone(feature),
       radius: Math.min(16, 6 + graphNodeDegree(feature.featureId, edges) * 1.15),
-      x: Math.cos(theta) * radius * 210,
-      y: y * 170,
-      z: Math.sin(theta) * radius * 210,
+      x: Math.cos(theta) * radius * spread,
+      y: y * heightSpread,
+      z: Math.sin(theta) * radius * spread,
       vx: 0,
       vy: 0,
       vz: 0,
@@ -1617,7 +1620,7 @@ function layoutFeatureNetwork3d(features, edges) {
     a: byId.get(edge.from),
     b: byId.get(edge.to),
     k: edge.type === 'same category' ? 0.012 : edge.type === 'depends on' ? 0.042 : 0.024,
-    len: edge.type === 'same category' ? 110 : 168,
+    len: (edge.type === 'same category' ? 110 : 168) * springScale,
     type: edge.type,
   })).filter((spring) => spring.a && spring.b);
 
@@ -1631,7 +1634,7 @@ function layoutFeatureNetwork3d(features, edges) {
         let dz = nodes[j].z - nodes[i].z;
         const distSq = (dx * dx) + (dy * dy) + (dz * dz) || 1;
         const dist = Math.sqrt(distSq);
-        const force = 4200 / distSq;
+        const force = (3800 * springScale) / distSq;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         const fz = (dz / dist) * force;
@@ -1660,9 +1663,9 @@ function layoutFeatureNetwork3d(features, edges) {
       spring.b.vz -= fz;
     }
     for (const node of nodes) {
-      node.vx -= node.x * 0.012;
-      node.vy -= node.y * 0.012;
-      node.vz -= node.z * 0.012;
+      node.vx -= node.x * 0.008;
+      node.vy -= node.y * 0.008;
+      node.vz -= node.z * 0.008;
       node.vx *= cool;
       node.vy *= cool;
       node.vz *= cool;
@@ -1712,13 +1715,77 @@ function applyGraph3dZoomLabel() {
   if (label) label.textContent = `${graph3dZoomPercent()}%`;
 }
 
+function graph3dFitDistance(nodes) {
+  let maxR = 180;
+  for (const node of nodes || []) {
+    const reach = Math.hypot(node.x || 0, node.y || 0, node.z || 0);
+    if (reach > maxR) maxR = reach;
+  }
+  return Math.max(GRAPH3D_DISTANCE_DEFAULT, maxR * 1.9);
+}
+
 function resetGraph3dViewport() {
-  graph3d.distance = GRAPH3D_DISTANCE_DEFAULT;
+  graph3d.distance = graph3dFitDistance(graph3d.nodes);
   graph3d.panX = 0;
   graph3d.panY = 0;
   graph3d.yaw = 0.42;
   graph3d.pitch = 0.28;
   applyGraph3dZoomLabel();
+}
+
+function graph3dBoxesOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function graph3dLabelBox(item, kind) {
+  const r = Math.max(4.5, item.node.radius * item.proj.scale);
+  const text = kind === 'title'
+    ? truncateGraphTitle(item.node.feature.title, 24)
+    : item.node.id;
+  const w = Math.max(40, String(text || '').length * 6.6);
+  const h = 13;
+  const y = kind === 'title' ? item.proj.y + r + 2 : item.proj.y - r - 16;
+  return { x: item.proj.x - (w / 2), y, w, h };
+}
+
+function graph3dLabelPlan(projected, focusId, neighborIds) {
+  const showId = new Set();
+  const showTitle = new Set();
+  const boxes = [];
+  const byId = new Map(projected.map((item) => [item.node.id, item]));
+
+  const tryAdd = (id, kind) => {
+    const item = byId.get(id);
+    if (!item) return false;
+    const box = graph3dLabelBox(item, kind);
+    if (boxes.some((other) => graph3dBoxesOverlap(box, other))) return false;
+    boxes.push(box);
+    return true;
+  };
+
+  if (focusId) {
+    showId.add(focusId);
+    showTitle.add(focusId);
+    tryAdd(focusId, 'id');
+    tryAdd(focusId, 'title');
+    neighborIds.forEach((id) => {
+      showId.add(id);
+      tryAdd(id, 'id');
+    });
+    return { showId, showTitle };
+  }
+
+  const nearest = [...projected].sort((a, b) => a.proj.depth - b.proj.depth);
+  const maxIds = Math.min(12, Math.max(5, Math.ceil(nearest.length / 7)));
+  let added = 0;
+  for (const item of nearest) {
+    if (item.proj.scale < 0.4) continue;
+    if (!tryAdd(item.node.id, 'id')) continue;
+    showId.add(item.node.id);
+    added += 1;
+    if (added >= maxIds) break;
+  }
+  return { showId, showTitle };
 }
 
 function zoomGraph3dAt(origin, nextScale, width, height) {
@@ -1838,7 +1905,7 @@ function updateGraph3dHud() {
   } else if (!spinning) {
     status.textContent = 'Paused — drag to orbit the cloud';
   } else {
-    status.textContent = 'Spinning — click a feature to highlight it and its links';
+    status.textContent = 'Spinning — hover a feature to read its name, click to pin it';
   }
   resume.hidden = spinning;
   updateGraph3dInspect();
@@ -1898,6 +1965,7 @@ function drawGraph3dFrame(ts) {
   const focusId = graph3d.grabbedId || graph3d.hoverId;
   const relations = graph3dRelationsFor(focusId);
   const neighborIds = new Set(relations.keys());
+  const labels = graph3dLabelPlan(projected, focusId, neighborIds);
   const pulse = 0.55 + (0.45 * Math.sin((ts || 0) * 0.005));
 
   for (const edge of graph3d.edges) {
@@ -1956,8 +2024,8 @@ function drawGraph3dFrame(ts) {
     const dim = role === 'dim';
     const boost = isFocus ? 1.55 : (isNeighbor ? 1.22 : 1);
     const r = Math.max(4.5, node.radius * proj.scale * boost);
-    const fade = Math.max(0.28, Math.min(1, 1.15 - ((proj.depth - 420) / 700)));
-    ctx.globalAlpha = dim ? 0.1 : fade;
+    const fade = Math.max(0.22, Math.min(1, 1.2 - ((proj.depth - 400) / 620)));
+    ctx.globalAlpha = dim ? 0.12 : fade;
 
     if (isFocus) {
       ctx.beginPath();
@@ -1998,20 +2066,19 @@ function drawGraph3dFrame(ts) {
       ctx.stroke();
     }
 
-    if (dim) {
-      ctx.fillStyle = '#6e7681';
-      ctx.font = `600 ${Math.max(8, 9 * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(node.id, proj.x, proj.y - r - 4);
-    } else {
-      ctx.fillStyle = '#e6edf3';
-      ctx.font = `700 ${Math.max(10, (isFocus ? 14 : 12) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
+    const wantId = labels.showId.has(node.id);
+    const wantTitle = labels.showTitle.has(node.id);
+    if (wantId) {
+      ctx.fillStyle = dim ? '#6e7681' : '#e6edf3';
+      ctx.font = `700 ${Math.max(10, (isFocus ? 14 : 11.5) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       ctx.fillText(node.id, proj.x, proj.y - r - 8);
+    }
+    if (wantTitle) {
       ctx.fillStyle = isFocus ? '#c9d1d9' : '#8b949e';
       ctx.font = `${isFocus ? 600 : 400} ${Math.max(8, (isFocus ? 11 : 9.5) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(truncateGraphTitle(node.feature.title, isFocus ? 34 : 24), proj.x, proj.y + r + 6);
     }
@@ -2185,7 +2252,7 @@ function ensureGraph3dChrome(root) {
     <canvas id="graph3dCanvas" class="feature-graph-3d-canvas" role="img" aria-label="Rotating three-dimensional feature graph"></canvas>
     <div class="graph-3d-inspect" id="graph3dInspect" hidden></div>
     <div class="graph-3d-hud" id="graph3dHud">
-      <span id="graph3dStatus">Spinning — click a feature to highlight it and its links</span>
+      <span id="graph3dStatus">Spinning — hover a feature to read its name, click to pin it</span>
       <button type="button" class="graph-3d-resume" id="graph3dResume" hidden>Resume spin</button>
     </div>
     <div class="graph-zoom-controls" role="group" aria-label="3D graph zoom">
