@@ -38,9 +38,16 @@
       <div class="process-graph" id="processGraph" role="region" aria-label="Workflow process graph"></div>
     </div>
     <div class="graph-view" id="graphView" hidden aria-live="polite">
-      <p class="graph-lead">A network of every tracked feature. Scroll to zoom, drag to pan, hover a node to see its links, click to open its workspace. This view never starts agents.</p>
+      <div class="graph-toolbar">
+        <p class="graph-lead" id="graphLead">A network of every tracked feature. Scroll to zoom, drag to pan, hover a node to see its links, click to open its workspace. This view never starts agents.</p>
+        <div class="view-toggle graph-mode-toggle" role="group" aria-label="Graph projection">
+          <button type="button" class="btn btn-secondary is-active" id="graphMode2d" aria-pressed="true">2D</button>
+          <button type="button" class="btn btn-secondary" id="graphMode3d" aria-pressed="false">3D</button>
+        </div>
+      </div>
       <div class="graph-legend" id="graphLegend" aria-label="Edge type legend"></div>
       <div class="feature-graph" id="featureGraph" role="region" aria-label="Feature relationship knowledge graph"></div>
+      <div class="feature-graph feature-graph-3d" id="featureGraph3d" hidden role="region" aria-label="Three-dimensional feature knowledge graph"></div>
     </div>
   </main>
 

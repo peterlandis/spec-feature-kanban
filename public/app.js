@@ -14,6 +14,7 @@ let state = {
 
 let uiState = {
   mainView: 'board',
+  graphMode: '2d',
   searchQuery: '',
   workspaceFeatureId: null,
   workspaceTab: 'plan',
@@ -45,6 +46,26 @@ let graphRenderCache = { edgeList: [], features: [], positions: new Map() };
 let graphResizeObserver = null;
 let graphViewport = { scale: 1, x: 0, y: 0 };
 let graphPointer = { active: false, lastX: 0, lastY: 0, didPan: false };
+let graph3dResizeObserver = null;
+const GRAPH3D_DISTANCE_DEFAULT = 620;
+
+let graph3d = {
+  yaw: 0.42,
+  pitch: 0.28,
+  distance: GRAPH3D_DISTANCE_DEFAULT,
+  panX: 0,
+  panY: 0,
+  autoRotate: true,
+  grabbedId: null,
+  hoverId: null,
+  raf: 0,
+  lastTs: 0,
+  layoutKey: '',
+  nodes: [],
+  edges: [],
+  features: [],
+  pointer: { active: false, lastX: 0, lastY: 0, didDrag: false },
+};
 
 const GRAPH_ZOOM_MIN = 0.35;
 const GRAPH_ZOOM_MAX = 5;
@@ -616,13 +637,51 @@ function syncViewToggleButtons() {
   }
 }
 
+function syncGraphModeButtons() {
+  const mode = uiState.graphMode === '3d' ? '3d' : '2d';
+  const twoD = document.getElementById('graphMode2d');
+  const threeD = document.getElementById('graphMode3d');
+  if (twoD) {
+    twoD.classList.toggle('is-active', mode === '2d');
+    twoD.setAttribute('aria-pressed', String(mode === '2d'));
+  }
+  if (threeD) {
+    threeD.classList.toggle('is-active', mode === '3d');
+    threeD.setAttribute('aria-pressed', String(mode === '3d'));
+  }
+}
+
+function setGraphMode(mode) {
+  uiState.graphMode = mode === '3d' ? '3d' : '2d';
+  if (uiState.graphMode !== '3d') stopGraph3dLoop();
+  if (uiState.mainView === 'graph') renderGraphPage();
+}
+
 function setMainView(view) {
   if (view === 'process' || view === 'graph') {
     uiState.mainView = view;
   } else {
     uiState.mainView = 'board';
   }
+  if (uiState.mainView !== 'graph' || uiState.graphMode !== '3d') stopGraph3dLoop();
   renderMainView();
+}
+
+function renderGraphPage() {
+  const graph2d = document.getElementById('featureGraph');
+  const graph3dEl = document.getElementById('featureGraph3d');
+  const lead = document.getElementById('graphLead');
+  const mode3d = uiState.graphMode === '3d';
+  if (graph2d) graph2d.hidden = mode3d;
+  if (graph3dEl) graph3dEl.hidden = !mode3d;
+  if (lead) {
+    lead.textContent = mode3d
+      ? 'A rotating 3D perspective of every tracked feature. Scroll or use +/− to zoom, grab a node to stop the spin and inspect it in depth, then drag to orbit. Click a node to open its workspace. This view never starts agents.'
+      : 'A network of every tracked feature. Scroll to zoom, drag to pan, hover a node to see its links, click to open its workspace. This view never starts agents.';
+  }
+  syncGraphModeButtons();
+  if (mode3d) renderFeatureGraph3d();
+  else renderFeatureGraph();
 }
 
 function renderMainView() {
@@ -635,7 +694,7 @@ function renderMainView() {
   if (graphView) graphView.hidden = view !== 'graph';
   syncViewToggleButtons();
   if (view === 'process') renderProcess();
-  else if (view === 'graph') renderFeatureGraph();
+  else if (view === 'graph') renderGraphPage();
   else {
     stopProcessPolling();
     renderColumns();
@@ -878,8 +937,8 @@ function layoutFeatureNetwork(features, edges, width, height) {
   return positions;
 }
 
-function renderGraphLegend() {
-  const legend = document.getElementById('graphLegend');
+function renderGraphLegend(targetId = 'graphLegend') {
+  const legend = document.getElementById(targetId);
   if (!legend) return;
   legend.innerHTML = GRAPH_EDGE_LEGEND.map((item) => `
     <span class="graph-legend-item">
@@ -1191,7 +1250,7 @@ function renderGraphZoomControls(root) {
 function ensureGraphResizeObserver(root) {
   if (graphResizeObserver || typeof ResizeObserver === 'undefined') return;
   graphResizeObserver = new ResizeObserver(() => {
-    if (uiState.mainView !== 'graph') return;
+    if (uiState.mainView !== 'graph' || uiState.graphMode === '3d') return;
     renderFeatureGraph();
   });
   graphResizeObserver.observe(root);
@@ -1231,6 +1290,688 @@ function renderFeatureGraph() {
   drawFeatureNetwork(shell, { features, edges, positions, width, height, focusId });
   renderGraphZoomControls(root);
   ensureGraphResizeObserver(root);
+  syncLiveViewPolling(anyFeatureLive(features));
+}
+
+const GRAPH3D_NODE_COLORS = {
+  core: { fill: '#dce3ea', glow: 'rgba(220, 227, 234, 0.35)' },
+  agent: { fill: '#f0c6d8', glow: 'rgba(240, 198, 216, 0.4)' },
+  complete: { fill: '#3fb950', glow: 'rgba(63, 185, 80, 0.45)' },
+  live: { fill: '#58a6ff', glow: 'rgba(88, 166, 255, 0.5)' },
+  waiting: { fill: '#d29922', glow: 'rgba(210, 153, 34, 0.45)' },
+  blocked: { fill: '#f85149', glow: 'rgba(248, 81, 73, 0.45)' },
+};
+
+const GRAPH3D_EDGE_COLORS = {
+  'depends on': 'rgba(88, 166, 255, 0.72)',
+  'blocked by': 'rgba(248, 81, 73, 0.7)',
+  'same category': 'rgba(110, 124, 143, 0.28)',
+  'plan link': 'rgba(210, 153, 34, 0.7)',
+};
+
+function layoutFeatureNetwork3d(features, edges) {
+  const count = features.length;
+  const nodes = features.map((feature, index) => {
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const y = count === 1 ? 0 : 1 - ((index / (count - 1)) * 2);
+    const radius = Math.sqrt(Math.max(0, 1 - (y * y)));
+    const theta = golden * index;
+    return {
+      id: feature.featureId,
+      feature,
+      tone: graphNodeTone(feature),
+      radius: Math.min(16, 6 + graphNodeDegree(feature.featureId, edges) * 1.15),
+      x: Math.cos(theta) * radius * 210,
+      y: y * 170,
+      z: Math.sin(theta) * radius * 210,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+    };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const springs = edges.map((edge) => ({
+    a: byId.get(edge.from),
+    b: byId.get(edge.to),
+    k: edge.type === 'same category' ? 0.012 : edge.type === 'depends on' ? 0.042 : 0.024,
+    len: edge.type === 'same category' ? 110 : 168,
+    type: edge.type,
+  })).filter((spring) => spring.a && spring.b);
+
+  const iterations = 90;
+  for (let step = 0; step < iterations; step += 1) {
+    const cool = 0.88 - (step / iterations) * 0.32;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        let dx = nodes[j].x - nodes[i].x;
+        let dy = nodes[j].y - nodes[i].y;
+        let dz = nodes[j].z - nodes[i].z;
+        const distSq = (dx * dx) + (dy * dy) + (dz * dz) || 1;
+        const dist = Math.sqrt(distSq);
+        const force = 4200 / distSq;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        const fz = (dz / dist) * force;
+        nodes[i].vx -= fx;
+        nodes[i].vy -= fy;
+        nodes[i].vz -= fz;
+        nodes[j].vx += fx;
+        nodes[j].vy += fy;
+        nodes[j].vz += fz;
+      }
+    }
+    for (const spring of springs) {
+      const dx = spring.b.x - spring.a.x;
+      const dy = spring.b.y - spring.a.y;
+      const dz = spring.b.z - spring.a.z;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+      const pull = spring.k * (dist - spring.len);
+      const fx = (dx / dist) * pull;
+      const fy = (dy / dist) * pull;
+      const fz = (dz / dist) * pull;
+      spring.a.vx += fx;
+      spring.a.vy += fy;
+      spring.a.vz += fz;
+      spring.b.vx -= fx;
+      spring.b.vy -= fy;
+      spring.b.vz -= fz;
+    }
+    for (const node of nodes) {
+      node.vx -= node.x * 0.012;
+      node.vy -= node.y * 0.012;
+      node.vz -= node.z * 0.012;
+      node.vx *= cool;
+      node.vy *= cool;
+      node.vz *= cool;
+      node.x += node.vx;
+      node.y += node.vy;
+      node.z += node.vz;
+    }
+  }
+  return nodes;
+}
+
+function rotateGraph3dPoint(point, yaw, pitch) {
+  const cosY = Math.cos(yaw);
+  const sinY = Math.sin(yaw);
+  const x1 = (point.x * cosY) + (point.z * sinY);
+  const z1 = (point.z * cosY) - (point.x * sinY);
+  const cosP = Math.cos(pitch);
+  const sinP = Math.sin(pitch);
+  return {
+    x: x1,
+    y: (point.y * cosP) - (z1 * sinP),
+    z: (point.y * sinP) + (z1 * cosP),
+  };
+}
+
+function projectGraph3dPoint(point, width, height, distance) {
+  const depth = point.z + distance;
+  const scale = 520 / Math.max(80, depth);
+  return {
+    x: (width / 2) + (point.x * scale) + graph3d.panX,
+    y: (height / 2) + (point.y * scale) + graph3d.panY,
+    scale,
+    depth,
+  };
+}
+
+function graph3dViewScale() {
+  return GRAPH3D_DISTANCE_DEFAULT / graph3d.distance;
+}
+
+function graph3dZoomPercent() {
+  return Math.round(graph3dViewScale() * 100);
+}
+
+function applyGraph3dZoomLabel() {
+  const label = document.getElementById('graph3dZoomLabel');
+  if (label) label.textContent = `${graph3dZoomPercent()}%`;
+}
+
+function resetGraph3dViewport() {
+  graph3d.distance = GRAPH3D_DISTANCE_DEFAULT;
+  graph3d.panX = 0;
+  graph3d.panY = 0;
+  graph3d.yaw = 0.42;
+  graph3d.pitch = 0.28;
+  applyGraph3dZoomLabel();
+}
+
+function zoomGraph3dAt(origin, nextScale, width, height) {
+  const oldScale = graph3dViewScale() || 1;
+  const scale = clampGraphScale(nextScale);
+  const worldX = (origin.x - (width / 2) - graph3d.panX) / oldScale;
+  const worldY = (origin.y - (height / 2) - graph3d.panY) / oldScale;
+  graph3d.distance = GRAPH3D_DISTANCE_DEFAULT / scale;
+  graph3d.panX = origin.x - (width / 2) - (worldX * scale);
+  graph3d.panY = origin.y - (height / 2) - (worldY * scale);
+  applyGraph3dZoomLabel();
+}
+
+function graph3dProjectedNodes(width, height) {
+  return graph3d.nodes.map((node) => {
+    const rotated = rotateGraph3dPoint(node, graph3d.yaw, graph3d.pitch);
+    const proj = projectGraph3dPoint(rotated, width, height, graph3d.distance);
+    return { node, rotated, proj };
+  }).sort((a, b) => b.proj.depth - a.proj.depth);
+}
+
+function graph3dHitTest(px, py, projected) {
+  for (let i = projected.length - 1; i >= 0; i -= 1) {
+    const item = projected[i];
+    const focused = item.node.id === graph3d.grabbedId || item.node.id === graph3d.hoverId;
+    const radius = Math.max(12, (item.node.radius + (focused ? 14 : 8)) * item.proj.scale);
+    if (Math.hypot(px - item.proj.x, py - item.proj.y) <= radius) return item;
+  }
+  return null;
+}
+
+function stopGraph3dLoop() {
+  if (graph3d.raf) {
+    cancelAnimationFrame(graph3d.raf);
+    graph3d.raf = 0;
+  }
+  graph3d.lastTs = 0;
+}
+
+function pauseGraph3dSpin(featureId) {
+  graph3d.autoRotate = false;
+  graph3d.grabbedId = featureId || graph3d.grabbedId;
+  updateGraph3dHud();
+}
+
+function resumeGraph3dSpin() {
+  graph3d.autoRotate = true;
+  graph3d.grabbedId = null;
+  graph3d.hoverId = null;
+  updateGraph3dHud();
+}
+
+function graph3dRelationsFor(focusId) {
+  const byNeighbor = new Map();
+  if (!focusId) return byNeighbor;
+  for (const edge of graph3d.edges) {
+    let other = null;
+    if (edge.from === focusId) other = edge.to;
+    else if (edge.to === focusId) other = edge.from;
+    if (!other) continue;
+    const list = byNeighbor.get(other) || [];
+    list.push(edge);
+    byNeighbor.set(other, list);
+  }
+  return byNeighbor;
+}
+
+function updateGraph3dInspect() {
+  const card = document.getElementById('graph3dInspect');
+  if (!card) return;
+  const held = graph3d.nodes.find((node) => node.id === graph3d.grabbedId);
+  if (!held) {
+    card.hidden = true;
+    card.innerHTML = '';
+    return;
+  }
+  const relations = graph3dRelationsFor(held.id);
+  const related = [...relations.entries()].map(([id, edges]) => {
+    const other = graph3d.nodes.find((node) => node.id === id);
+    const types = [...new Set(edges.map((edge) => edge.type))];
+    return {
+      id,
+      title: other ? (other.feature.title || id) : id,
+      types,
+    };
+  });
+  const relItems = related.length
+    ? related.map((item) => `
+        <li>
+          <span class="graph-3d-inspect-rel-id">${escapeHtml(item.id)}</span>
+          <span class="graph-3d-inspect-rel-type">${escapeHtml(item.types.join(', '))}</span>
+          <span class="graph-3d-inspect-rel-title">${escapeHtml(truncateGraphTitle(item.title, 36))}</span>
+        </li>
+      `).join('')
+    : '<li class="is-empty">No parsed links — this feature is isolated here.</li>';
+  card.hidden = false;
+  card.innerHTML = `
+    <p class="graph-3d-inspect-kicker">Selected</p>
+    <p class="graph-3d-inspect-id">${escapeHtml(held.id)}</p>
+    <p class="graph-3d-inspect-title">${escapeHtml(held.feature.title || held.id)}</p>
+    <p class="graph-3d-inspect-kicker">${related.length} related</p>
+    <ul class="graph-3d-inspect-rels">${relItems}</ul>
+  `;
+}
+
+function updateGraph3dHud() {
+  const hud = document.getElementById('graph3dHud');
+  const status = document.getElementById('graph3dStatus');
+  const resume = document.getElementById('graph3dResume');
+  if (!hud || !status || !resume) return;
+  const held = graph3d.nodes.find((node) => node.id === graph3d.grabbedId);
+  const spinning = graph3d.autoRotate && !graph3d.grabbedId;
+  const relatedCount = held ? graph3dRelationsFor(held.id).size : 0;
+  hud.classList.toggle('is-paused', !spinning);
+  if (held) {
+    status.textContent = `Selected ${held.id} · ${relatedCount} related — drag to orbit, click again to open`;
+  } else if (!spinning) {
+    status.textContent = 'Paused — drag to orbit the cloud';
+  } else {
+    status.textContent = 'Spinning — click a feature to highlight it and its links';
+  }
+  resume.hidden = spinning;
+  updateGraph3dInspect();
+}
+
+function drawGraph3dFrame(ts) {
+  const canvas = document.getElementById('graph3dCanvas');
+  if (!canvas || uiState.mainView !== 'graph' || uiState.graphMode !== '3d') {
+    stopGraph3dLoop();
+    return;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const last = graph3d.lastTs || ts;
+  const dt = Math.min(48, ts - last);
+  graph3d.lastTs = ts;
+  if (graph3d.autoRotate && !graph3d.pointer.active) {
+    graph3d.yaw += dt * 0.00028;
+  }
+
+  const dpr = canvas.width / Math.max(1, canvas.clientWidth);
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const bg = ctx.createRadialGradient(cx, cy * 0.9, 20, cx, cy, Math.max(width, height) * 0.62);
+  bg.addColorStop(0, 'rgba(88, 166, 255, 0.07)');
+  bg.addColorStop(1, 'rgba(7, 11, 16, 0)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(88, 166, 255, 0.12)';
+  ctx.lineWidth = 1;
+  for (let ring = 80; ring <= 240; ring += 80) {
+    ctx.beginPath();
+    for (let i = 0; i <= 64; i += 1) {
+      const angle = (i / 64) * Math.PI * 2;
+      const rotated = rotateGraph3dPoint({
+        x: Math.cos(angle) * ring,
+        y: 0,
+        z: Math.sin(angle) * ring,
+      }, graph3d.yaw, graph3d.pitch);
+      const proj = projectGraph3dPoint(rotated, width, height, graph3d.distance);
+      if (i === 0) ctx.moveTo(proj.x, proj.y);
+      else ctx.lineTo(proj.x, proj.y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const projected = graph3dProjectedNodes(width, height);
+  const byId = new Map(projected.map((item) => [item.node.id, item]));
+  const focusId = graph3d.grabbedId || graph3d.hoverId;
+  const relations = graph3dRelationsFor(focusId);
+  const neighborIds = new Set(relations.keys());
+  const pulse = 0.55 + (0.45 * Math.sin((ts || 0) * 0.005));
+
+  for (const edge of graph3d.edges) {
+    const from = byId.get(edge.from);
+    const to = byId.get(edge.to);
+    if (!from || !to) continue;
+    const hot = focusId && (edge.from === focusId || edge.to === focusId);
+    const dim = !!(focusId && !hot);
+    const color = GRAPH3D_EDGE_COLORS[edge.type] || 'rgba(110, 124, 143, 0.5)';
+    if (hot) {
+      ctx.beginPath();
+      ctx.moveTo(from.proj.x, from.proj.y);
+      ctx.lineTo(to.proj.x, to.proj.y);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.28;
+      ctx.lineWidth = 10;
+      ctx.lineCap = 'round';
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.moveTo(from.proj.x, from.proj.y);
+    ctx.lineTo(to.proj.x, to.proj.y);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = dim ? 0.05 : (hot ? 1 : 0.55);
+    ctx.lineWidth = hot ? 2.6 : 1.05;
+    ctx.lineCap = 'round';
+    if (!hot && (edge.type === 'same category' || edge.type === 'blocked by')) {
+      ctx.setLineDash([4, 4]);
+    } else {
+      ctx.setLineDash([]);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    if (hot) {
+      const mx = (from.proj.x + to.proj.x) / 2;
+      const my = (from.proj.y + to.proj.y) / 2;
+      ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = edge.type;
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(13, 17, 23, 0.82)';
+      ctx.fillRect(mx - (tw / 2) - 5, my - 8, tw + 10, 16);
+      ctx.fillStyle = '#e6edf3';
+      ctx.fillText(label, mx, my);
+    }
+  }
+
+  const drawNode = (item, role) => {
+    const { node, proj } = item;
+    const tone = GRAPH3D_NODE_COLORS[node.tone] || GRAPH3D_NODE_COLORS.core;
+    const isFocus = role === 'focus';
+    const isNeighbor = role === 'neighbor';
+    const dim = role === 'dim';
+    const boost = isFocus ? 1.55 : (isNeighbor ? 1.22 : 1);
+    const r = Math.max(4.5, node.radius * proj.scale * boost);
+    const fade = Math.max(0.28, Math.min(1, 1.15 - ((proj.depth - 420) / 700)));
+    ctx.globalAlpha = dim ? 0.1 : fade;
+
+    if (isFocus) {
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(88, 166, 255, ${0.1 + (pulse * 0.12)})`;
+      ctx.arc(proj.x, proj.y, r + 22 + (pulse * 8), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.fillStyle = tone.glow;
+    ctx.arc(proj.x, proj.y, r + (isFocus ? 14 : 8), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.fillStyle = tone.fill;
+    ctx.shadowColor = isFocus ? 'rgba(88, 166, 255, 0.95)' : tone.glow;
+    ctx.shadowBlur = isFocus ? 28 : (isNeighbor ? 16 : 8);
+    ctx.arc(proj.x, proj.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (isFocus) {
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(88, 166, 255, ${0.55 + (pulse * 0.4)})`;
+      ctx.lineWidth = 2.4;
+      ctx.arc(proj.x, proj.y, r + 8 + (pulse * 3), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(230, 237, 243, 0.85)';
+      ctx.lineWidth = 1.2;
+      ctx.arc(proj.x, proj.y, r + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (isNeighbor) {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(88, 166, 255, 0.7)';
+      ctx.lineWidth = 1.6;
+      ctx.arc(proj.x, proj.y, r + 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (dim) {
+      ctx.fillStyle = '#6e7681';
+      ctx.font = `600 ${Math.max(8, 9 * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(node.id, proj.x, proj.y - r - 4);
+    } else {
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = `700 ${Math.max(10, (isFocus ? 14 : 12) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(node.id, proj.x, proj.y - r - 8);
+      ctx.fillStyle = isFocus ? '#c9d1d9' : '#8b949e';
+      ctx.font = `${isFocus ? 600 : 400} ${Math.max(8, (isFocus ? 11 : 9.5) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.fillText(truncateGraphTitle(node.feature.title, isFocus ? 34 : 24), proj.x, proj.y + r + 6);
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  for (const item of projected) {
+    const role = !focusId
+      ? 'plain'
+      : (item.node.id === focusId ? 'skip' : (neighborIds.has(item.node.id) ? 'skip' : 'dim'));
+    if (role === 'skip') continue;
+    drawNode(item, role);
+  }
+  for (const item of projected) {
+    if (focusId && neighborIds.has(item.node.id)) drawNode(item, 'neighbor');
+  }
+  if (focusId && byId.get(focusId)) drawNode(byId.get(focusId), 'focus');
+
+  graph3d.raf = requestAnimationFrame(drawGraph3dFrame);
+}
+
+function startGraph3dLoop() {
+  if (graph3d.raf) return;
+  graph3d.lastTs = 0;
+  graph3d.raf = requestAnimationFrame(drawGraph3dFrame);
+}
+
+function syncGraph3dCanvasSize(root, canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(720, root.clientWidth || 960);
+  const height = Math.max(520, root.clientHeight || 560);
+  const nextW = Math.round(width * dpr);
+  const nextH = Math.round(height * dpr);
+  if (canvas.width !== nextW || canvas.height !== nextH) {
+    canvas.width = nextW;
+    canvas.height = nextH;
+  }
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  return { width, height };
+}
+
+function graph3dPointerPosition(canvas, event) {
+  const box = canvas.getBoundingClientRect();
+  return {
+    x: event.clientX - box.left,
+    y: event.clientY - box.top,
+  };
+}
+
+function bindGraph3dCanvas(root, canvas) {
+  if (canvas.dataset.bound === '1') return;
+  canvas.dataset.bound = '1';
+
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const { width, height } = syncGraph3dCanvasSize(root, canvas);
+    const origin = graph3dPointerPosition(canvas, event);
+    const factor = event.deltaY > 0 ? 0.88 : 1.14;
+    zoomGraph3dAt(origin, graph3dViewScale() * factor, width, height);
+  }, { passive: false });
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const { width, height } = syncGraph3dCanvasSize(root, canvas);
+    const pos = graph3dPointerPosition(canvas, event);
+    const hit = graph3dHitTest(pos.x, pos.y, graph3dProjectedNodes(width, height));
+    graph3d.pointer = {
+      active: true,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      didDrag: false,
+      hitId: hit ? hit.node.id : null,
+      openOnRelease: !!(hit && hit.node.id === graph3d.grabbedId && !graph3d.autoRotate),
+    };
+    if (hit) {
+      pauseGraph3dSpin(hit.node.id);
+      root.classList.add('is-holding');
+    } else {
+      pauseGraph3dSpin(graph3d.grabbedId);
+      root.classList.add('is-orbiting');
+    }
+    canvas.setPointerCapture(event.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (event) => {
+    const { width, height } = syncGraph3dCanvasSize(root, canvas);
+    const pos = graph3dPointerPosition(canvas, event);
+    if (!graph3d.pointer.active) {
+      const hit = graph3dHitTest(pos.x, pos.y, graph3dProjectedNodes(width, height));
+      graph3d.hoverId = hit ? hit.node.id : null;
+      canvas.style.cursor = hit ? 'grab' : 'grab';
+      return;
+    }
+    const dx = event.clientX - graph3d.pointer.lastX;
+    const dy = event.clientY - graph3d.pointer.lastY;
+    if (Math.hypot(dx, dy) > 3) graph3d.pointer.didDrag = true;
+    graph3d.pointer.lastX = event.clientX;
+    graph3d.pointer.lastY = event.clientY;
+    graph3d.yaw += dx * 0.008;
+    graph3d.pitch = Math.max(-1.1, Math.min(1.1, graph3d.pitch + (dy * 0.006)));
+  });
+
+  const endPointer = (event) => {
+    if (!graph3d.pointer.active) return;
+    const didDrag = graph3d.pointer.didDrag;
+    const openId = graph3d.pointer.openOnRelease ? graph3d.pointer.hitId : null;
+    graph3d.pointer.active = false;
+    root.classList.remove('is-orbiting', 'is-holding');
+    if (canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
+    if (!didDrag && openId) {
+      openWorkspace(openId).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+    }
+  };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+}
+
+function bindGraph3dZoomControls(root) {
+  const controls = root.querySelector('.graph-zoom-controls');
+  if (!controls || controls.dataset.bound === '1') return;
+  controls.dataset.bound = '1';
+  controls.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-graph3d-zoom]');
+    if (!button) return;
+    const canvas = document.getElementById('graph3dCanvas');
+    if (!canvas) return;
+    const action = button.dataset.graph3dZoom;
+    if (action === 'reset') {
+      resetGraph3dViewport();
+      return;
+    }
+    const { width, height } = syncGraph3dCanvasSize(root, canvas);
+    const origin = { x: width / 2, y: height / 2 };
+    const factor = action === 'in' ? 1.2 : 0.83;
+    zoomGraph3dAt(origin, graph3dViewScale() * factor, width, height);
+  });
+}
+
+function ensureGraph3dInspectCard(root) {
+  if (root.querySelector('#graph3dInspect')) return;
+  const card = document.createElement('div');
+  card.id = 'graph3dInspect';
+  card.className = 'graph-3d-inspect';
+  card.hidden = true;
+  root.appendChild(card);
+}
+
+function ensureGraph3dChrome(root) {
+  if (root.querySelector('#graph3dCanvas')) {
+    if (!root.querySelector('[data-graph3d-zoom]')) {
+      const controls = document.createElement('div');
+      controls.className = 'graph-zoom-controls';
+      controls.setAttribute('role', 'group');
+      controls.setAttribute('aria-label', '3D graph zoom');
+      controls.innerHTML = `
+        <button type="button" class="graph-zoom-btn" data-graph3d-zoom="out" aria-label="Zoom out">−</button>
+        <span class="graph-zoom-label" id="graph3dZoomLabel">${graph3dZoomPercent()}%</span>
+        <button type="button" class="graph-zoom-btn" data-graph3d-zoom="in" aria-label="Zoom in">+</button>
+        <button type="button" class="graph-zoom-btn graph-zoom-reset" data-graph3d-zoom="reset">Reset</button>
+      `;
+      root.appendChild(controls);
+    }
+    ensureGraph3dInspectCard(root);
+    bindGraph3dZoomControls(root);
+    return;
+  }
+  root.innerHTML = `
+    <canvas id="graph3dCanvas" class="feature-graph-3d-canvas" role="img" aria-label="Rotating three-dimensional feature graph"></canvas>
+    <div class="graph-3d-inspect" id="graph3dInspect" hidden></div>
+    <div class="graph-3d-hud" id="graph3dHud">
+      <span id="graph3dStatus">Spinning — click a feature to highlight it and its links</span>
+      <button type="button" class="graph-3d-resume" id="graph3dResume" hidden>Resume spin</button>
+    </div>
+    <div class="graph-zoom-controls" role="group" aria-label="3D graph zoom">
+      <button type="button" class="graph-zoom-btn" data-graph3d-zoom="out" aria-label="Zoom out">−</button>
+      <span class="graph-zoom-label" id="graph3dZoomLabel">${graph3dZoomPercent()}%</span>
+      <button type="button" class="graph-zoom-btn" data-graph3d-zoom="in" aria-label="Zoom in">+</button>
+      <button type="button" class="graph-zoom-btn graph-zoom-reset" data-graph3d-zoom="reset">Reset</button>
+    </div>
+  `;
+  const canvas = document.getElementById('graph3dCanvas');
+  const resume = document.getElementById('graph3dResume');
+  bindGraph3dCanvas(root, canvas);
+  bindGraph3dZoomControls(root);
+  resume.addEventListener('click', () => resumeGraph3dSpin());
+}
+
+function ensureGraph3dResizeObserver(root) {
+  if (graph3dResizeObserver || typeof ResizeObserver === 'undefined') return;
+  graph3dResizeObserver = new ResizeObserver(() => {
+    if (uiState.mainView !== 'graph' || uiState.graphMode !== '3d') return;
+    const canvas = document.getElementById('graph3dCanvas');
+    if (canvas) syncGraph3dCanvasSize(root, canvas);
+  });
+  graph3dResizeObserver.observe(root);
+}
+
+function renderFeatureGraph3d() {
+  const root = document.getElementById('featureGraph3d');
+  if (!root) return;
+
+  renderGraphLegend('graphLegend');
+  const features = applySearch(getAllFeatures());
+  const visibleIds = new Set(features.map((f) => f.featureId));
+  const allEdges = (state.graph && state.graph.edges) || [];
+  const edges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
+  if (graph3d.grabbedId && !visibleIds.has(graph3d.grabbedId)) {
+    graph3d.grabbedId = null;
+  }
+  if (graph3d.hoverId && !visibleIds.has(graph3d.hoverId)) {
+    graph3d.hoverId = null;
+  }
+
+  const layoutKey = [...visibleIds].sort().join(',');
+  if (graph3d.layoutKey !== layoutKey) {
+    graph3d.nodes = layoutFeatureNetwork3d(features, edges);
+    graph3d.layoutKey = layoutKey;
+    resetGraph3dViewport();
+  } else {
+    const byId = new Map(features.map((feature) => [feature.featureId, feature]));
+    graph3d.nodes = graph3d.nodes.map((node) => {
+      const feature = byId.get(node.id) || node.feature;
+      return {
+        ...node,
+        feature,
+        tone: graphNodeTone(feature),
+        radius: Math.min(16, 6 + graphNodeDegree(node.id, edges) * 1.15),
+      };
+    });
+  }
+  graph3d.edges = edges;
+  graph3d.features = features;
+
+  ensureGraph3dChrome(root);
+  const canvas = document.getElementById('graph3dCanvas');
+  if (canvas) syncGraph3dCanvasSize(root, canvas);
+  applyGraph3dZoomLabel();
+  updateGraph3dHud();
+  ensureGraph3dResizeObserver(root);
+  startGraph3dLoop();
   syncLiveViewPolling(anyFeatureLive(features));
 }
 
@@ -2525,6 +3266,8 @@ document.getElementById('refresh').addEventListener('click', load);
 document.getElementById('viewBoard')?.addEventListener('click', () => setMainView('board'));
 document.getElementById('viewProcess')?.addEventListener('click', () => setMainView('process'));
 document.getElementById('viewGraph')?.addEventListener('click', () => setMainView('graph'));
+document.getElementById('graphMode2d')?.addEventListener('click', () => setGraphMode('2d'));
+document.getElementById('graphMode3d')?.addEventListener('click', () => setGraphMode('3d'));
 document.getElementById('openSettings').addEventListener('click', () => openSettings());
 document.getElementById('closeSettings').addEventListener('click', closeSettings);
 document.getElementById('openGithubSettingsFromShip').addEventListener('click', openGithubSettings);

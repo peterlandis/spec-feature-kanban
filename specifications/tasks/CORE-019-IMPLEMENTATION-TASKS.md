@@ -11,7 +11,7 @@
 
 ## Tasks
 
-- [ ] Wheel zoom toward cursor; clamp min/max scale.
-- [ ] + / − / Reset controls on the Graph canvas.
-- [ ] Drag empty canvas to pan; click node still opens workspace.
-- [ ] Verify Board/Process unchanged; Graph does not start agents.
+- [x] Wheel zoom toward cursor; clamp min/max scale.
+- [x] + / − / Reset controls on the Graph canvas.
+- [x] Drag empty canvas to pan; click node still opens workspace.
+- [x] Verify Board/Process unchanged; Graph does not start agents.
