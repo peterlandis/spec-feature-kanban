@@ -17,6 +17,10 @@
       <button type="button" class="btn btn-secondary" id="browseFeaturesFile">Browse…</button>
       <button type="button" class="btn btn-secondary" id="createFeaturesFile">Create File…</button>
     </div>
+    <div class="view-toggle-header" role="group" aria-label="Main view">
+      <button type="button" class="btn btn-secondary is-active" id="viewBoard" aria-pressed="true">Board</button>
+      <button type="button" class="btn btn-secondary" id="viewProcess" aria-pressed="false">Process</button>
+    </div>
     <div class="actions">
       <input type="search" class="search-input" id="searchFeatures" placeholder="Search features…" aria-label="Search features" />
       <button type="button" class="btn btn-primary" id="createFeature">+ Create New Feature</button>
@@ -28,6 +32,10 @@
 
   <main class="kanban">
     <div class="columns" id="columns"></div>
+    <div class="process-view" id="processView" hidden aria-live="polite">
+      <p class="process-lead">Spec-driven lifecycle across all tracked features. Click a feature to open its workspace. This view never starts agents.</p>
+      <div class="process-graph" id="processGraph" role="region" aria-label="Workflow process graph"></div>
+    </div>
   </main>
 
   <div class="modal" id="featureModal">

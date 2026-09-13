@@ -15,8 +15,12 @@ import {
 import {
   checkPlanApprovalBoxes,
   describeArtifact,
+  graphStage,
+  graphStageLabel,
+  isWaitingOnHuman,
   pipelineStage,
   resolveGitRoot,
+  truncateForProcessUi,
   resolveArtifactPaths,
   resolveSpecRoot,
   scaffoldArtifacts,
@@ -37,7 +41,7 @@ import {
   startPlanningRun,
   startRevisionRun,
 } from './workflow/runner.js';
-import { getFeatureWorkflow, readWorkflowState, updateFeatureWorkflow } from './workflow/state.js';
+import { findActiveRuns, getFeatureWorkflow, readWorkflowState, updateFeatureWorkflow } from './workflow/state.js';
 import { checkoutFeatureBranch, describeFeatureBranch } from './workflow/git.js';
 import {
   commitTrackingFileIfNeeded,
@@ -472,6 +476,28 @@ function saveRegistry(parsed, preamble, postamble) {
   writeFeaturesFile(serializeToMarkdown(parsed, preamble || '', postamble || ''));
 }
 
+function processFieldsForFeature(feature, workflow) {
+  const wf = workflow || {};
+  const stageId = graphStage(feature.status, wf);
+  const lastLine = truncateForProcessUi(wf.lastAssistantText);
+  const transcript = Array.isArray(wf.transcript) ? wf.transcript : [];
+  const lastTx = transcript.length ? transcript[transcript.length - 1] : null;
+  const activityLine = lastLine || truncateForProcessUi(
+    lastTx && lastTx.text ? `${lastTx.title || lastTx.kind}: ${lastTx.text}` : '',
+  );
+  return {
+    planApprovedAt: wf.planApprovedAt || null,
+    runStatus: wf.runStatus || null,
+    workflowKind: wf.kind || null,
+    pipeline: pipelineStage(feature.status, wf),
+    graphStage: stageId,
+    graphStageLabel: graphStageLabel(stageId),
+    waitingOnHuman: isWaitingOnHuman(feature.status, wf, stageId),
+    activityLine,
+    lastError: wf.lastError ? truncateForProcessUi(wf.lastError, 120) : null,
+  };
+}
+
 function attachWorkflowSummaries(categories) {
   const specRoot = resolveSpecRoot(activeFeaturesPath);
   const cwd = resolveGitRoot(activeFeaturesPath);
@@ -487,9 +513,7 @@ function attachWorkflowSummaries(categories) {
       });
       return {
         ...feature,
-        planApprovedAt: workflow.planApprovedAt || null,
-        runStatus: workflow.runStatus || null,
-        pipeline: pipelineStage(feature.status, workflow),
+        ...processFieldsForFeature(feature, workflow),
         branch: git.branch,
         branchCurrent: git.isCurrent,
         branchExists: git.exists,
@@ -538,6 +562,32 @@ function buildWorkspacePayload(feature) {
     }),
   };
 }
+
+/** GET /api/workflow/process-summary - Read-only fleet snapshot for Process view */
+app.get('/api/workflow/process-summary', (req, res) => {
+  try {
+    const content = readFeaturesFile();
+    const parsed = parseFeaturesMd(content);
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const workflows = readWorkflowState(specRoot).features || {};
+    const features = [];
+    for (const category of parsed.categories || []) {
+      for (const feature of category.features || []) {
+        const workflow = workflows[feature.featureId] || {};
+        features.push({
+          featureId: feature.featureId,
+          title: feature.title,
+          status: feature.status,
+          ...processFieldsForFeature(feature, workflow),
+        });
+      }
+    }
+    res.json({ features, activeRunCount: Object.keys(findActiveRuns(specRoot)).length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /** GET /api/features - Parse and return features as JSON */
 app.get('/api/features', (req, res) => {

@@ -1,5 +1,5 @@
 /**
- * Background Cursor runs: one active run per target repo.
+ * Background Cursor runs: one active run per feature (concurrent runs across features).
  */
 
 import {
@@ -25,7 +25,7 @@ import { implementPrompt, planningPrompt, revisionPrompt } from './prompts.js';
 import {
   appendTranscript,
   clearActiveRun,
-  findActiveRun,
+  findActiveRunForFeature,
   getFeatureWorkflow,
   setActiveRun,
   updateFeatureWorkflow,
@@ -107,11 +107,11 @@ async function finishLive(featureId) {
 }
 
 export function assertNoActiveRun(specRoot, featureId) {
-  const active = findActiveRun(specRoot);
-  if (active && active.featureId !== featureId) {
-    throw new Error(`A Cursor run is already active for ${active.featureId}. Cancel it or wait before starting another.`);
+  const active = findActiveRunForFeature(specRoot, featureId);
+  if (active) {
+    throw new Error(`A Cursor run is already active for ${featureId}.`);
   }
-  if (active && active.featureId === featureId) {
+  if (liveRuns.has(featureId)) {
     throw new Error(`A Cursor run is already active for ${featureId}.`);
   }
 }
@@ -334,7 +334,7 @@ export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFe
 
 export async function cancelFeatureRun(specRoot, featureId, featuresAbsPath) {
   const live = liveRuns.get(featureId);
-  const active = findActiveRun(specRoot);
+  const active = findActiveRunForFeature(specRoot, featureId);
   if (live) {
     await cancelCursorRun(live.run, { runId: live.run.id, cwd: live.cwd });
     return;
