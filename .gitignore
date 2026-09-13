@@ -6,6 +6,9 @@
 .features-agent-store/
 .features-node/
 
+# Installed dependencies (recreate with npm install)
+node_modules/
+
 # Environment files that may hold keys
 .env
 .env.*
