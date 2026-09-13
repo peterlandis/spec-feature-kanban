@@ -38,7 +38,7 @@ cycle.
 | CORE-008 | Cursor API key settings | Save a Cursor API key in the UI so the server can start agents without a terminal export | v1 | ✅ Complete | @peterlandis | - | Header Cursor key → paste once. Stored in gitignored `.features-secrets.json`, never returned to the browser. |
 | CORE-009 | Refresh Cursor models | Pull the latest Cursor models when the app starts and from Cursor setup | v1 | ✅ Complete | @peterlandis | - | `Cursor.models.list()` on launch, after saving a key, and via Refresh models. Cached in gitignored `.features-models.json`. |
 | CORE-011 | Live agent chain of thought | Show the in-progress Cursor agent transcript (thinking, tool calls, and assistant text) in the feature workspace so a human can tell what the run is doing | v1 | ✅ Complete | @peterlandis | [CORE-011-PLAN.md](plans/CORE-011-PLAN.md) | Live Agent activity panel above workspace tabs. Polls during starting/running. |
-| CORE-012 | Column card counts | Show how many features are in each Kanban column on the column header (WIP, each category, Completed). Counts should follow the current search filter. | v1 | 🧪 Testing | @peterlandis | specifications/plans/CORE-012-PLAN.md |  |
+| CORE-012 | Column card counts | Show how many features are in each Kanban column on the column header (WIP, each category, Completed). Counts should follow the current search filter. | v1 | 🟢 ReadyToMerge | @peterlandis | specifications/plans/CORE-012-PLAN.md | PR: https://github.com/peterlandis/spec-feature-kanban/pull/1 |
 
 
 ### Agent Workflow
