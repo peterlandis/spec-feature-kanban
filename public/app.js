@@ -14,6 +14,12 @@ let state = {
 
 let uiState = {
   searchQuery: '',
+  workspaceFeatureId: null,
+  workspaceTab: 'plan',
+  artifactView: { plan: 'preview', tasks: 'preview' },
+  shipDraftDirty: false,
+  shipDraftFeatureId: null,
+  settingsTab: 'ide',
 };
 
 let configState = {
@@ -21,7 +27,17 @@ let configState = {
   usingEnvOverride: false,
   candidates: [],
   browseSupported: false,
+  cursorConfigured: false,
+  cursorModel: '',
+  cursorModels: [],
+  cursorModelsUpdatedAt: '',
+  cursorModelsError: '',
+  githubConfigured: false,
+  githubTokenHint: '',
+  githubTokenSource: 'none',
 };
+
+let workspacePollTimer = null;
 
 async function fetchConfig() {
   const res = await fetch(`${API}/config`);
@@ -101,6 +117,270 @@ function setSubtitle(text) {
   el.textContent = text;
 }
 
+function applyCursorConfig(cfg) {
+  if (!cfg) return;
+  if ('cursorConfigured' in cfg) configState.cursorConfigured = !!cfg.cursorConfigured;
+  if ('cursorModel' in cfg) configState.cursorModel = cfg.cursorModel || '';
+  if ('cursorKeyHint' in cfg) configState.cursorKeyHint = cfg.cursorKeyHint || '';
+  if ('cursorKeySource' in cfg) configState.cursorKeySource = cfg.cursorKeySource || 'none';
+  if ('cursorModels' in cfg) {
+    configState.cursorModels = Array.isArray(cfg.cursorModels) ? cfg.cursorModels : [];
+  }
+  if ('cursorModelsUpdatedAt' in cfg) configState.cursorModelsUpdatedAt = cfg.cursorModelsUpdatedAt || '';
+  if ('cursorModelsError' in cfg) configState.cursorModelsError = cfg.cursorModelsError || '';
+}
+
+function applyGithubConfig(cfg) {
+  if (!cfg) return;
+  if ('githubConfigured' in cfg) configState.githubConfigured = !!cfg.githubConfigured;
+  if ('githubTokenHint' in cfg) configState.githubTokenHint = cfg.githubTokenHint || '';
+  if ('githubTokenSource' in cfg) configState.githubTokenSource = cfg.githubTokenSource || 'none';
+}
+
+function formatModelsUpdatedAt(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+}
+
+function renderCursorModelSelect() {
+  const select = document.getElementById('cursorModel');
+  const hintEl = document.getElementById('cursorModelsHint');
+  if (!select) return;
+  const current = configState.cursorModel || '';
+  const models = configState.cursorModels || [];
+  const ids = new Set(models.map((m) => m.id));
+  select.innerHTML = '';
+  if (current && !ids.has(current)) {
+    select.appendChild(new Option(`${current} (saved)`, current));
+  }
+  if (models.length === 0 && !current) {
+    select.appendChild(new Option('Save a key, then refresh models', ''));
+  }
+  for (const model of models) {
+    const label = model.displayName && model.displayName !== model.id
+      ? `${model.displayName} (${model.id})`
+      : model.id;
+    select.appendChild(new Option(label, model.id));
+  }
+  select.value = current || (models[0] ? models[0].id : '');
+  if (!hintEl) return;
+  if (configState.cursorModelsError) {
+    hintEl.textContent = configState.cursorModelsError;
+    return;
+  }
+  if (models.length) {
+    const when = formatModelsUpdatedAt(configState.cursorModelsUpdatedAt);
+    hintEl.textContent = when
+      ? `${models.length} models · updated ${when}`
+      : `${models.length} models from Cursor`;
+    return;
+  }
+  hintEl.textContent = 'Models refresh when the app starts after you save a key.';
+}
+
+function renderCursorSettingsStatus() {
+  const statusEl = document.getElementById('cursorSettingsStatus');
+  const cardEl = document.getElementById('cursorCardStatus');
+  renderCursorModelSelect();
+  if (cardEl) {
+    cardEl.textContent = configState.cursorConfigured ? 'Configured' : 'Not configured';
+    cardEl.classList.toggle('is-ready', !!configState.cursorConfigured);
+  }
+  if (!statusEl) return;
+  if (!configState.cursorConfigured) {
+    statusEl.textContent = 'No key saved yet. Paste one below and click Save and use.';
+    return;
+  }
+  const hint = configState.cursorKeyHint ? ` ending in ${configState.cursorKeyHint}` : '';
+  const source = configState.cursorKeySource === 'env'
+    ? 'from your terminal environment'
+    : 'saved in this app';
+  statusEl.textContent = `Ready${hint} (${source}). You can start planning without exporting a variable.`;
+}
+
+function renderGithubSettingsStatus() {
+  const statusEl = document.getElementById('githubSettingsStatus');
+  const cardEl = document.getElementById('githubCardStatus');
+  if (cardEl) {
+    cardEl.textContent = configState.githubConfigured ? 'Configured' : 'Not configured';
+    cardEl.classList.toggle('is-ready', !!configState.githubConfigured);
+  }
+  if (!statusEl) return;
+  if (!configState.githubConfigured) {
+    statusEl.textContent = 'No token saved yet. Paste one below and click Save and use.';
+    return;
+  }
+  const hint = configState.githubTokenHint ? ` ending in ${configState.githubTokenHint}` : '';
+  const source = configState.githubTokenSource === 'env'
+    ? 'from your terminal environment'
+    : 'saved in this app';
+  statusEl.textContent = `Ready${hint} (${source}). Ship can create draft PRs without gh auth login.`;
+}
+
+function setSettingsTab(tab) {
+  uiState.settingsTab = tab === 'github' ? 'github' : 'ide';
+  document.querySelectorAll('.settings-tab').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.settingsTab === uiState.settingsTab);
+  });
+  document.querySelectorAll('.settings-pane').forEach((pane) => {
+    pane.classList.toggle('is-active', pane.dataset.settingsPane === uiState.settingsTab);
+  });
+}
+
+function openSettings(tab) {
+  const keyInput = document.getElementById('cursorApiKey');
+  if (keyInput) {
+    keyInput.value = '';
+    keyInput.placeholder = configState.cursorKeyHint
+      ? `Saved key ending in ${configState.cursorKeyHint}`
+      : 'cursor_…';
+  }
+  const tokenInput = document.getElementById('githubToken');
+  if (tokenInput) {
+    tokenInput.value = '';
+    tokenInput.placeholder = configState.githubTokenHint
+      ? `Saved token ending in ${configState.githubTokenHint}`
+      : 'ghp_… or github_pat_…';
+  }
+  renderCursorSettingsStatus();
+  renderGithubSettingsStatus();
+  setSettingsTab(tab || uiState.settingsTab || 'ide');
+  document.getElementById('settings').hidden = false;
+  if (configState.cursorConfigured) {
+    refreshCursorModels({ silent: true }).catch(() => {});
+  }
+}
+
+function closeSettings() {
+  document.getElementById('settings').hidden = true;
+}
+
+function openCursorSettings() {
+  openSettings('ide');
+}
+
+function openGithubSettings() {
+  openSettings('github');
+}
+
+async function saveGithubSettings(event) {
+  event.preventDefault();
+  const token = document.getElementById('githubToken').value.trim();
+  if (!token) {
+    toast('Paste a GitHub token first', 'error');
+    return;
+  }
+  const res = await fetch(`${API}/github-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save GitHub token');
+  }
+  document.getElementById('githubToken').value = '';
+  applyGithubConfig(await res.json());
+  renderGithubSettingsStatus();
+  if (uiState.workspaceFeatureId) {
+    fetchWorkspace(uiState.workspaceFeatureId).then(renderWorkspace).catch(() => {});
+  }
+  toast('GitHub token saved. You can create a draft PR now.');
+}
+
+async function clearGithubSettings() {
+  const ok = window.confirm('Remove the GitHub token saved in this app?');
+  if (!ok) return;
+  const res = await fetch(`${API}/github-settings`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to remove GitHub token');
+  }
+  document.getElementById('githubToken').value = '';
+  applyGithubConfig(await res.json());
+  renderGithubSettingsStatus();
+  if (uiState.workspaceFeatureId) {
+    fetchWorkspace(uiState.workspaceFeatureId).then(renderWorkspace).catch(() => {});
+  }
+  toast('Saved GitHub token removed');
+}
+
+async function saveCursorSettings(event) {
+  event.preventDefault();
+  const apiKey = document.getElementById('cursorApiKey').value.trim();
+  const model = document.getElementById('cursorModel').value.trim();
+  const payload = {};
+  if (apiKey) payload.apiKey = apiKey;
+  if (model) payload.model = model;
+  if (!apiKey && !configState.cursorConfigured) {
+    toast('Paste a Cursor API key first', 'error');
+    return;
+  }
+  if (!apiKey && !model) {
+    toast('Enter a key or pick a model to save', 'error');
+    return;
+  }
+  const res = await fetch(`${API}/cursor-settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save Cursor key');
+  }
+  document.getElementById('cursorApiKey').value = '';
+  await initConfigUi();
+  if (apiKey) {
+    await refreshCursorModels({ silent: true }).catch(() => {});
+  }
+  toast('Cursor key saved. You can start planning now.');
+}
+
+async function refreshCursorModels({ silent } = {}) {
+  const hintEl = document.getElementById('cursorModelsHint');
+  const refreshBtn = document.getElementById('refreshCursorModels');
+  if (hintEl) hintEl.textContent = 'Refreshing models from Cursor…';
+  if (refreshBtn) refreshBtn.disabled = true;
+  try {
+    const res = await fetch(`${API}/cursor-models/refresh`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    applyCursorConfig({
+      ...body,
+      cursorModelsError: body.error || body.cursorModelsError || '',
+    });
+    renderCursorSettingsStatus();
+    if (!res.ok) {
+      throw new Error(body.error || 'Failed to refresh Cursor models');
+    }
+    if (!silent) {
+      toast(body.cursorModels && body.cursorModels.length
+        ? `Loaded ${body.cursorModels.length} Cursor models`
+        : (body.error || 'No models returned'));
+    }
+  } catch (err) {
+    renderCursorSettingsStatus();
+    throw err;
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
+async function clearCursorSettings() {
+  const ok = window.confirm('Remove the Cursor API key saved in this app?');
+  if (!ok) return;
+  const res = await fetch(`${API}/cursor-settings`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to remove Cursor key');
+  }
+  document.getElementById('cursorApiKey').value = '';
+  await initConfigUi();
+  toast('Saved Cursor key removed');
+}
+
 function renderFeaturesFileSelector() {
   const select = document.getElementById('featuresFileSelect');
   const applyBtn = document.getElementById('applyFeaturesFile');
@@ -160,8 +440,23 @@ async function initConfigUi() {
       usingEnvOverride: !!cfg.usingEnvOverride,
       candidates: files.candidates || [],
       browseSupported: !!cfg.browseSupported,
+      cursorConfigured: !!cfg.cursorConfigured,
+      cursorModel: cfg.cursorModel || '',
+      cursorKeyHint: cfg.cursorKeyHint || '',
+      cursorKeySource: cfg.cursorKeySource || 'none',
+      cursorModels: Array.isArray(cfg.cursorModels) ? cfg.cursorModels : [],
+      cursorModelsUpdatedAt: cfg.cursorModelsUpdatedAt || '',
+      cursorModelsError: cfg.cursorModelsError || '',
+      githubConfigured: !!cfg.githubConfigured,
+      githubTokenHint: cfg.githubTokenHint || '',
+      githubTokenSource: cfg.githubTokenSource || 'none',
     };
     renderFeaturesFileSelector();
+    renderCursorSettingsStatus();
+    renderGithubSettingsStatus();
+    if (configState.cursorConfigured) {
+      refreshCursorModels({ silent: true }).catch(() => {});
+    }
   } catch (err) {
     setSubtitle('Failed to load FEATURES.md selection');
     toast(err.message || 'Failed to load config', 'error');
@@ -227,12 +522,26 @@ function applySearch(features) {
   });
 }
 
+function pipelineChip(status) {
+  const value = status || '';
+  if (value.includes('Planning')) return { label: 'planning', cls: 'chip-planning' };
+  if (value.includes('PlanReview')) return { label: 'awaiting approval', cls: 'chip-review' };
+  if (value.includes('WorkInProgress')) return { label: 'coding', cls: 'chip-coding' };
+  if (value.includes('Testing')) return { label: 'review', cls: 'chip-testing' };
+  if (value.includes('ReadyToMerge')) return { label: 'ready', cls: 'chip-ready' };
+  return null;
+}
+
 function renderCard(feature, categoryTitle) {
   const div = document.createElement('div');
   div.className = 'card';
   div.draggable = true;
   div.dataset.featureId = feature.featureId;
   div.dataset.category = feature.categoryTitle;
+  const chip = pipelineChip(feature.status);
+  const chipHtml = chip
+    ? `<span class="pipeline-chip ${chip.cls}">${escapeHtml(chip.label)}</span>`
+    : '';
   div.innerHTML = `
     <div class="card-header">
       <span class="card-feature-id">${escapeHtml(feature.featureId)}</span>
@@ -243,7 +552,9 @@ function renderCard(feature, categoryTitle) {
       <span class="card-status">${escapeHtml(feature.status)}</span>
       <span class="card-assignee ${!(feature.assignee && feature.assignee !== '-') ? 'unassigned' : ''}">${escapeHtml(feature.assignee && feature.assignee !== '-' ? feature.assignee : 'Unassigned')}</span>
     </div>
+    ${chipHtml}
     <div class="card-actions">
+      <button type="button" data-action="open">Open</button>
       <button type="button" data-action="edit">Edit</button>
       <button type="button" data-action="delete">Delete</button>
     </div>
@@ -255,6 +566,11 @@ function renderCard(feature, categoryTitle) {
     div.classList.add('dragging');
   });
   div.addEventListener('dragend', () => div.classList.remove('dragging'));
+
+  div.querySelector('[data-action="open"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openWorkspace(feature.featureId).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+  });
 
   div.querySelector('[data-action="edit"]').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -367,10 +683,17 @@ function renderColumns() {
 
     colEl.className = `column${isVisuallyEmptyCategoryColumn ? ' is-empty' : ''}`;
 
+    const features = getFeaturesForColumn(col.key);
+    const count = features.length;
+    const countLabel = `${count} feature${count === 1 ? '' : 's'}`;
+
     colEl.innerHTML = `
       <div class="column-header ${col.css}">
         <div class="column-header-row">
-          <span class="column-title">${escapeHtml(col.title)}</span>
+          <div class="column-header-leading">
+            <span class="column-title">${escapeHtml(col.title)}</span>
+            <span class="column-count" aria-label="${countLabel}">${count}</span>
+          </div>
           ${isCategoryColumn
             ? `<button type="button" class="column-delete ${hasAnyFeaturesInCategory ? 'is-disabled' : ''}" data-action="delete-category" title="${hasAnyFeaturesInCategory ? 'Category is not empty' : 'Delete empty category'}">Delete</button>`
             : ''
@@ -381,7 +704,6 @@ function renderColumns() {
     `;
 
     const cardsContainer = colEl.querySelector('.column-cards');
-    const features = getFeaturesForColumn(col.key);
 
     for (const f of features) {
       const displayCategory = col.key === COL_WIP || col.key === COL_COMPLETE ? f.categoryTitle : col.key;
@@ -470,6 +792,448 @@ async function persist() {
     preamble: state.preamble,
     postamble: state.postamble,
   });
+}
+
+function findFeatureById(featureId) {
+  for (const category of state.categories) {
+    const feature = category.features.find((item) => item.featureId === featureId);
+    if (feature) return feature;
+  }
+  return null;
+}
+
+function setWorkspaceTab(tabName) {
+  uiState.workspaceTab = tabName;
+  document.querySelectorAll('.workspace-tab').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.tab === tabName);
+  });
+  document.querySelectorAll('.workspace-pane').forEach((pane) => {
+    pane.classList.toggle('is-active', pane.dataset.pane === tabName);
+  });
+}
+
+function setEditorValue(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (document.activeElement === el) return;
+  if (el.value === value) return;
+  el.value = value;
+}
+
+function markdownHtml(source) {
+  try {
+    if (typeof window.renderMarkdown === 'function') {
+      return window.renderMarkdown(source);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  const div = document.createElement('div');
+  div.textContent = source || '';
+  return '<pre>' + div.innerHTML + '</pre>';
+}
+
+function setMarkdownPreview(id, source) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = markdownHtml(source);
+}
+
+function setArtifactView(kind, mode) {
+  uiState.artifactView[kind] = mode;
+  const preview = document.getElementById(kind + 'Preview');
+  const editor = document.getElementById(kind + 'Editor');
+  if (preview) preview.hidden = mode !== 'preview';
+  if (editor) editor.hidden = mode !== 'edit';
+  document.querySelectorAll('[data-preview-for="' + kind + '"]').forEach((btn) => {
+    btn.classList.toggle('is-active', mode === 'preview');
+  });
+  document.querySelectorAll('[data-edit-for="' + kind + '"]').forEach((btn) => {
+    btn.classList.toggle('is-active', mode === 'edit');
+  });
+  if (mode === 'preview' && editor) {
+    setMarkdownPreview(kind + 'Preview', editor.value);
+  }
+}
+
+function renderWorkspace(payload) {
+  const feature = payload.feature;
+  uiState.workspaceFeatureId = feature.featureId;
+  document.getElementById('workspaceFeatureId').textContent = feature.featureId;
+  document.getElementById('workspaceTitle').textContent = feature.title;
+  document.getElementById('workspaceStatus').textContent = feature.status;
+  const chip = document.getElementById('workspaceChip');
+  const stage = payload.stage || (pipelineChip(feature.status) || {}).label;
+  if (stage) {
+    chip.hidden = false;
+    chip.textContent = stage;
+    chip.className = 'pipeline-chip';
+    const mapped = pipelineChip(feature.status);
+    if (mapped) chip.classList.add(mapped.cls);
+  } else {
+    chip.hidden = true;
+  }
+
+  const plan = payload.artifacts.plan;
+  const tasks = payload.artifacts.tasks;
+  document.getElementById('planPath').textContent = plan.exists ? plan.path : 'not created yet';
+  document.getElementById('tasksPath').textContent = tasks.exists ? tasks.path : 'not created yet';
+  setEditorValue('planEditor', plan.content || '');
+  setEditorValue('tasksEditor', tasks.content || '');
+  setArtifactView('plan', uiState.artifactView.plan || 'preview');
+  setArtifactView('tasks', uiState.artifactView.tasks || 'preview');
+  setMarkdownPreview('planPreview', document.getElementById('planEditor').value);
+  setMarkdownPreview('tasksPreview', document.getElementById('tasksEditor').value);
+
+  const completion = payload.artifacts.completion;
+  const review = payload.artifacts.review;
+  setMarkdownPreview('completionPreview', completion.exists ? completion.content : '');
+  setMarkdownPreview('reviewPreview', review.exists ? review.content : '');
+
+  const workflow = payload.workflow || {};
+  const running = workflow.runStatus === 'running' || workflow.runStatus === 'starting';
+  const approved = !!workflow.planApprovedAt;
+  const configured = !!configState.cursorConfigured;
+  renderAgentTranscript(workflow);
+
+  document.getElementById('approvePlan').textContent = approved ? 'Plan approved' : 'Approve plan';
+  document.getElementById('approvePlan').disabled = approved || !tasks.exists || running;
+  document.getElementById('startPlanning').textContent = workflow.runStatus === 'finished' && workflow.kind === 'planning'
+    ? 'Re-run planning agent'
+    : 'Start planning';
+  document.getElementById('startPlanning').disabled = !configured || running;
+  document.getElementById('sendRevision').disabled = !configured || running || !tasks.exists;
+  document.getElementById('startImplement').disabled = !configured || running || !approved;
+  document.getElementById('cancelRun').disabled = !running;
+
+  const ship = payload.ship || {};
+  const shipStatus = document.getElementById('shipStatus');
+  const shipMissing = document.getElementById('shipMissing');
+  const shipBlockers = document.getElementById('shipBlockers');
+  const shipMrLine = document.getElementById('shipMrLine');
+  const shipMrLink = document.getElementById('shipMrLink');
+  const createMr = document.getElementById('createMergeRequest');
+  const copyMr = document.getElementById('copyMergeRequest');
+  if (ship.mrUrl) {
+    shipStatus.textContent = ship.approved
+      ? 'Review approved. Draft merge request is on the feature row. This board does not merge.'
+      : 'A merge request URL is on the feature row. This board does not merge.';
+  } else {
+    shipStatus.textContent = 'Approve the completion summary and security review by creating a draft PR. This commits current work (except local secrets), pushes the branch, and opens a draft merge request. It does not merge.';
+  }
+  if (ship.missing && ship.missing.length) {
+    shipMissing.hidden = false;
+    shipMissing.textContent = `Still needed: ${ship.missing.join(' and ')}.`;
+  } else {
+    shipMissing.hidden = true;
+    shipMissing.textContent = '';
+  }
+  if (ship.securityBlocked) {
+    shipBlockers.hidden = false;
+    shipBlockers.textContent = ship.securityReason || 'Security review is blocked.';
+  } else if (ship.ghError) {
+    shipBlockers.hidden = false;
+    shipBlockers.textContent = ship.ghError;
+  } else {
+    shipBlockers.hidden = true;
+    shipBlockers.textContent = '';
+  }
+  const shipGithubHint = document.getElementById('shipGithubHint');
+  if (shipGithubHint) shipGithubHint.hidden = !ship.ghError;
+  if (ship.mrUrl) {
+    shipMrLine.hidden = false;
+    shipMrLink.href = ship.mrUrl;
+    shipMrLink.textContent = ship.mrUrl;
+    copyMr.hidden = false;
+  } else {
+    shipMrLine.hidden = true;
+    shipMrLink.href = '#';
+    shipMrLink.textContent = '';
+    copyMr.hidden = true;
+  }
+  createMr.textContent = ship.mrUrl ? 'Update draft PR' : 'Create draft PR';
+  createMr.disabled = running || !ship.canCreate;
+  fillShipDraft(payload.feature && payload.feature.featureId, ship);
+  document.getElementById('resetShipDraft').disabled = !ship.draftBody && !ship.draftTitle;
+
+  const hint = document.getElementById('cursorConfigHint');
+  hint.textContent = configured
+    ? `Local Cursor agent (${configState.cursorModel || 'composer-2.5'}). One run per repo.`
+    : 'Save a Cursor API key in Settings → IDE tools to fire agents from the app.';
+
+  const runMeta = document.getElementById('runMeta');
+  const parts = [
+    workflow.kind ? `kind: ${workflow.kind}` : null,
+    workflow.runStatus ? `status: ${workflow.runStatus}` : 'No Cursor run yet.',
+    workflow.agentId ? `agent: ${workflow.agentId}` : null,
+    workflow.runId ? `run: ${workflow.runId}` : null,
+  ].filter(Boolean);
+  runMeta.textContent = parts.join(' · ');
+  document.getElementById('runSummary').textContent = workflow.lastAssistantText
+    || 'The latest agent summary will appear here.';
+  const runError = document.getElementById('runError');
+  if (workflow.lastError) {
+    runError.hidden = false;
+    runError.textContent = workflow.lastError;
+  } else {
+    runError.hidden = true;
+    runError.textContent = '';
+  }
+
+  syncWorkspacePolling(running);
+}
+
+function renderAgentTranscript(workflow) {
+  const statusEl = document.getElementById('agentLiveStatus');
+  const listEl = document.getElementById('agentTranscript');
+  if (!statusEl || !listEl) return;
+  const status = workflow.runStatus || 'idle';
+  const kind = workflow.kind ? `${workflow.kind} · ` : '';
+  statusEl.textContent = workflow.lastError && status === 'error'
+    ? `${kind}error`
+    : (kind + status);
+  const lines = Array.isArray(workflow.transcript) ? workflow.transcript : [];
+  const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40;
+  if (!lines.length && workflow.lastError) {
+    listEl.innerHTML = `<li class="tx-error"><span class="tx-kind">Error</span>${escapeHtml(workflow.lastError)}</li>`;
+    return;
+  }
+  if (!lines.length) {
+    listEl.innerHTML = '<li class="tx-empty">Confirm Start planning. This log shows thinking, tools, and errors while the agent runs. The Plan tab may still show an empty template until the agent writes it.</li>';
+    return;
+  }
+  listEl.innerHTML = lines.map((line) => {
+    const kindClass = 'tx-' + (line.kind || 'status');
+    const title = escapeHtml(line.title || line.kind || '');
+    const text = escapeHtml(line.text || '');
+    return `<li class="${kindClass}"><span class="tx-kind">${title}</span>${text}</li>`;
+  }).join('');
+  if (nearBottom) listEl.scrollTop = listEl.scrollHeight;
+}
+
+async function fetchWorkspace(featureId) {
+  const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}/workspace`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to load workspace');
+  }
+  return res.json();
+}
+
+async function openWorkspace(featureId) {
+  const payload = await fetchWorkspace(featureId);
+  renderWorkspace(payload);
+  setWorkspaceTab(uiState.workspaceTab || 'plan');
+  document.getElementById('workspace').hidden = false;
+}
+
+function stopWorkspacePolling() {
+  if (workspacePollTimer) {
+    clearInterval(workspacePollTimer);
+    workspacePollTimer = null;
+  }
+}
+
+function syncWorkspacePolling(running) {
+  if (running && !workspacePollTimer) {
+    workspacePollTimer = setInterval(() => {
+      if (!uiState.workspaceFeatureId || document.getElementById('workspace').hidden) return;
+      fetchWorkspace(uiState.workspaceFeatureId)
+        .then((payload) => {
+          renderWorkspace(payload);
+          load().catch(() => {});
+        })
+        .catch(() => {});
+    }, 1000);
+  }
+  if (!running) {
+    stopWorkspacePolling();
+  }
+}
+
+function closeWorkspace() {
+  stopWorkspacePolling();
+  document.getElementById('workspace').hidden = true;
+}
+
+async function postWorkflow(path, body, fallbackError) {
+  const res = await fetch(`${API}/features/${encodeURIComponent(uiState.workspaceFeatureId)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || fallbackError);
+  }
+  return res.json();
+}
+
+async function startPlanning() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const ok = window.confirm(
+    `Start a local Cursor agent to write the plan and tasks for ${featureId}? This spends Cursor usage. It will not implement product code.`
+  );
+  if (!ok) return;
+  const data = await postWorkflow('/start-planning', { confirmed: true }, 'Failed to start planning');
+  renderWorkspace(data.workspace);
+  await load();
+  toast('Planning agent started');
+}
+
+async function saveArtifact(kind) {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const content = kind === 'plan'
+    ? document.getElementById('planEditor').value
+    : document.getElementById('tasksEditor').value;
+  const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}/artifacts`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, content }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save artifact');
+  }
+  const data = await res.json();
+  renderWorkspace(data.workspace);
+  toast(kind === 'plan' ? 'Plan saved' : 'Tasks saved');
+}
+
+async function approvePlan() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const ok = window.confirm(
+    `Approve the plan and tasks for ${featureId}? This records approval only. It does not start implementation.`
+  );
+  if (!ok) return;
+  const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}/approve-plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to approve plan');
+  }
+  const data = await res.json();
+  renderWorkspace(data.workspace);
+  toast('Plan approved. Start implementation when you are ready.');
+}
+
+async function sendRevision() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const note = document.getElementById('revisionNote').value.trim();
+  if (!note) {
+    toast('Enter a revision note first', 'error');
+    return;
+  }
+  const ok = window.confirm(
+    `Send this revision to the Cursor agent for ${featureId}? It will edit plan and task files only.`
+  );
+  if (!ok) return;
+  const data = await postWorkflow('/revise', { confirmed: true, note }, 'Failed to start revision');
+  renderWorkspace(data.workspace);
+  await load();
+  toast('Revision agent started');
+}
+
+async function startImplement() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const ok = window.confirm(
+    `Start implementation for ${featureId} with the local Cursor agent? This writes product code from the approved plan.`
+  );
+  if (!ok) return;
+  const data = await postWorkflow('/implement', { confirmed: true }, 'Failed to start implementation');
+  renderWorkspace(data.workspace);
+  await load();
+  toast('Implementation agent started');
+}
+
+function fillShipDraft(featureId, ship, force) {
+  const titleEl = document.getElementById('shipTitle');
+  const bodyEl = document.getElementById('shipBody');
+  const hintEl = document.getElementById('shipDraftHint');
+  const filesBlock = document.getElementById('shipFilesBlock');
+  const filesEl = document.getElementById('shipFiles');
+  if (uiState.shipDraftFeatureId !== featureId) {
+    uiState.shipDraftFeatureId = featureId;
+    uiState.shipDraftDirty = false;
+  }
+  hintEl.textContent = ship.draftSource === 'completion-summary'
+    ? '(generated from the completion summary)'
+    : '(generated draft — edit before creating)';
+  if (force || !uiState.shipDraftDirty) {
+    titleEl.value = ship.draftTitle || '';
+    bodyEl.value = ship.draftBody || '';
+    if (force) uiState.shipDraftDirty = false;
+  }
+  const files = Array.isArray(ship.files) ? ship.files : [];
+  if (files.length) {
+    filesBlock.hidden = false;
+    filesEl.innerHTML = files.map((filePath) => `<li>${escapeHtml(filePath)}</li>`).join('');
+  } else {
+    filesBlock.hidden = true;
+    filesEl.innerHTML = '';
+  }
+}
+
+function markShipDraftDirty() {
+  uiState.shipDraftDirty = true;
+}
+
+async function createMergeRequest() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const title = document.getElementById('shipTitle').value.trim();
+  const body = document.getElementById('shipBody').value.trim();
+  if (!title || !body) {
+    toast('Edit the generated PR title and description before creating the draft.', 'error');
+    return;
+  }
+  const ok = window.confirm(
+    `Create a draft PR for ${featureId} with the title and description in the Ship tab? This commits current work except local secrets, pushes the branch, and opens a draft merge request. It will not merge.`
+  );
+  if (!ok) return;
+  const data = await postWorkflow('/ship', { confirmed: true, title, body }, 'Failed to create merge request');
+  uiState.shipDraftDirty = false;
+  renderWorkspace(data.workspace);
+  await load();
+  toast(data.reused ? 'Existing draft PR updated' : 'Draft PR created');
+}
+
+function resetShipDraft() {
+  if (!uiState.workspaceFeatureId) return;
+  fetchWorkspace(uiState.workspaceFeatureId).then((payload) => {
+    fillShipDraft(uiState.workspaceFeatureId, payload.ship || {}, true);
+    toast('Restored the generated PR description');
+  }).catch((err) => toast(err.message || 'Failed to restore draft', 'error'));
+}
+
+async function copyMergeRequest() {
+  const link = document.getElementById('shipMrLink');
+  const url = link && link.href && link.href !== window.location.href ? link.href : '';
+  if (!url || url.endsWith('#')) {
+    toast('No merge request link yet', 'error');
+    return;
+  }
+  await navigator.clipboard.writeText(url);
+  toast('Copied merge request link');
+}
+
+async function cancelRun() {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const ok = window.confirm(`Cancel the in-flight Cursor run for ${featureId}?`);
+  if (!ok) return;
+  const data = await postWorkflow('/cancel', { confirmed: true }, 'Failed to cancel run');
+  renderWorkspace(data.workspace);
+  await load();
+  toast('Cancel requested');
 }
 
 function openCreateModal(preselectedCategoryTitleOrEvent) {
@@ -781,6 +1545,30 @@ document.getElementById('addCategory')?.addEventListener('click', () => {
   addCategory().catch((err) => toast(err.message || 'Failed to add category', 'error'));
 });
 document.getElementById('refresh').addEventListener('click', load);
+document.getElementById('openSettings').addEventListener('click', () => openSettings());
+document.getElementById('closeSettings').addEventListener('click', closeSettings);
+document.getElementById('openGithubSettingsFromShip').addEventListener('click', openGithubSettings);
+document.querySelectorAll('.settings-tab').forEach((button) => {
+  button.addEventListener('click', () => setSettingsTab(button.dataset.settingsTab));
+});
+document.getElementById('settings').addEventListener('click', (e) => {
+  if (e.target.id === 'settings') closeSettings();
+});
+document.getElementById('githubSettingsForm').addEventListener('submit', (event) => {
+  saveGithubSettings(event).catch((err) => toast(err.message || 'Failed to save GitHub token', 'error'));
+});
+document.getElementById('clearGithubSettings').addEventListener('click', () => {
+  clearGithubSettings().catch((err) => toast(err.message || 'Failed to remove GitHub token', 'error'));
+});
+document.getElementById('cursorSettingsForm').addEventListener('submit', (event) => {
+  saveCursorSettings(event).catch((err) => toast(err.message || 'Failed to save Cursor key', 'error'));
+});
+document.getElementById('clearCursorSettings').addEventListener('click', () => {
+  clearCursorSettings().catch((err) => toast(err.message || 'Failed to remove Cursor key', 'error'));
+});
+document.getElementById('refreshCursorModels').addEventListener('click', () => {
+  refreshCursorModels().catch((err) => toast(err.message || 'Failed to refresh Cursor models', 'error'));
+});
 document.getElementById('closeModal').addEventListener('click', () =>
   document.getElementById('featureModal').classList.remove('open')
 );
@@ -803,6 +1591,66 @@ document.getElementById('assignee').addEventListener('change', function () {
 
 document.getElementById('newCategory').addEventListener('input', updateFeatureIdFromCategory);
 document.getElementById('newCategory').addEventListener('blur', updateFeatureIdFromCategory);
+
+document.getElementById('closeWorkspace').addEventListener('click', closeWorkspace);
+document.querySelectorAll('[data-preview-for]').forEach((button) => {
+  button.addEventListener('click', () => setArtifactView(button.dataset.previewFor, 'preview'));
+});
+document.querySelectorAll('[data-edit-for]').forEach((button) => {
+  button.addEventListener('click', () => setArtifactView(button.dataset.editFor, 'edit'));
+});
+document.getElementById('startPlanning').addEventListener('click', () => {
+  startPlanning().catch((err) => toast(err.message || 'Failed to start planning', 'error'));
+});
+document.getElementById('approvePlan').addEventListener('click', () => {
+  approvePlan().catch((err) => toast(err.message || 'Failed to approve plan', 'error'));
+});
+document.getElementById('sendRevision').addEventListener('click', () => {
+  sendRevision().catch((err) => toast(err.message || 'Failed to revise', 'error'));
+});
+document.getElementById('startImplement').addEventListener('click', () => {
+  startImplement().catch((err) => toast(err.message || 'Failed to start implementation', 'error'));
+});
+document.getElementById('cancelRun').addEventListener('click', () => {
+  cancelRun().catch((err) => toast(err.message || 'Failed to cancel', 'error'));
+});
+document.getElementById('createMergeRequest').addEventListener('click', () => {
+  createMergeRequest().catch((err) => toast(err.message || 'Failed to create merge request', 'error'));
+});
+document.getElementById('resetShipDraft').addEventListener('click', resetShipDraft);
+document.getElementById('shipTitle').addEventListener('input', markShipDraftDirty);
+document.getElementById('shipBody').addEventListener('input', markShipDraftDirty);
+document.getElementById('copyMergeRequest').addEventListener('click', () => {
+  copyMergeRequest().catch((err) => toast(err.message || 'Failed to copy link', 'error'));
+});
+document.getElementById('savePlan').addEventListener('click', () => {
+  saveArtifact('plan').catch((err) => toast(err.message || 'Failed to save plan', 'error'));
+});
+document.getElementById('saveTasks').addEventListener('click', () => {
+  saveArtifact('tasks').catch((err) => toast(err.message || 'Failed to save tasks', 'error'));
+});
+document.getElementById('editFeatureFromWorkspace').addEventListener('click', () => {
+  const feature = findFeatureById(uiState.workspaceFeatureId);
+  if (feature) openEditModal(feature);
+});
+document.querySelectorAll('.workspace-tab').forEach((button) => {
+  button.addEventListener('click', () => setWorkspaceTab(button.dataset.tab));
+});
+document.getElementById('workspace').addEventListener('click', (e) => {
+  if (e.target.id === 'workspace') closeWorkspace();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!document.getElementById('settings').hidden) {
+      closeSettings();
+      return;
+    }
+    if (!document.getElementById('workspace').hidden) {
+      if (document.getElementById('featureModal').classList.contains('open')) return;
+      closeWorkspace();
+    }
+  }
+});
 
 const searchEl = document.getElementById('searchFeatures');
 if (searchEl) {

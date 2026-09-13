@@ -44,6 +44,8 @@ function normalizeStatus(s) {
   if (t.includes('WorkInProgress')) return STATUS_WIP;
   if (t.includes('Testing')) return '🧪 Testing';
   if (t.includes('ReadyToMerge')) return '🟢 ReadyToMerge';
+  if (t.includes('PlanReview')) return '👀 PlanReview';
+  if (t.includes('Planning')) return '📝 Planning';
   if (t.includes('Planned')) return '📋 Planned';
   if (t.includes('Blocked')) return '🚫 Blocked';
   if (t.includes('Paused')) return '⏸️ Paused';

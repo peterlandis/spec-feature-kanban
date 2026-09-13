@@ -12,6 +12,37 @@ import {
   serializeToMarkdown,
   extractPreambleAndPostamble,
 } from './parser.js';
+import {
+  checkPlanApprovalBoxes,
+  describeArtifact,
+  pipelineStage,
+  resolveGitRoot,
+  resolveArtifactPaths,
+  resolveSpecRoot,
+  scaffoldArtifacts,
+  STATUS_BLOCKED,
+  STATUS_READY_TO_MERGE,
+  toSpecRelativePath,
+  writeText,
+} from './workflow/artifacts.js';
+import { cursorModel, isCursorConfigured } from './workflow/cursor-adapter.js';
+import { applyStoredSecrets, getCursorSetupStatus, getGithubSetupStatus, saveCursorSetup, saveGithubSetup } from './workflow/secrets.js';
+import { loadModelsCache, modelsPayload, refreshCursorModels } from './workflow/models.js';
+import {
+  assertNoActiveRun,
+  cancelFeatureRun,
+  requireCursorConfigured,
+  startImplementRun,
+  startPlanningRun,
+  startRevisionRun,
+} from './workflow/runner.js';
+import { getFeatureWorkflow, updateFeatureWorkflow } from './workflow/state.js';
+import {
+  commitTrackingFileIfNeeded,
+  createFeatureMergeRequest,
+  describeShip,
+  mergeNotesWithPrUrl,
+} from './workflow/ship.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = __dirname;
@@ -30,6 +61,8 @@ This document tracks features and tasks for the project. Use this file to coordi
 - 🟢 **ReadyToMerge** - PR approved by reviewer, ready to merge
 - ✅ **Complete** - Feature is complete and merged
 - 📋 **Planned** - Planned but not started
+- 📝 **Planning** - Writing plan and tasks
+- 👀 **PlanReview** - Plan and tasks waiting on approval
 - 🚫 **Blocked** - Blocked by dependencies or issues
 - ⏸️ **Paused** - Temporarily paused
 
@@ -212,6 +245,14 @@ function initActiveFeaturesPath() {
 }
 
 initActiveFeaturesPath();
+applyStoredSecrets(PROJECT_ROOT);
+loadModelsCache(PROJECT_ROOT);
+if (isCursorConfigured()) {
+  refreshCursorModels(PROJECT_ROOT).then((catalog) => {
+    console.log(`Cursor models: ${catalog.models.length} available`);
+    if (catalog.error) console.warn(`Cursor models refresh: ${catalog.error}`);
+  });
+}
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -224,7 +265,92 @@ app.get('/api/config', (req, res) => {
     usingEnvOverride: !!process.env.FEATURES_PATH,
     platform: process.platform,
     browseSupported: process.platform === 'darwin' && !process.env.FEATURES_PATH,
+    ...getCursorSetupStatus(PROJECT_ROOT),
+    ...getGithubSetupStatus(PROJECT_ROOT),
+    ...modelsPayload(),
+    cursorConfigured: isCursorConfigured(),
+    cursorModel: cursorModel(),
   });
+});
+
+/** POST /api/cursor-models/refresh - Pull the latest Cursor models for this key */
+app.post('/api/cursor-models/refresh', async (req, res) => {
+  try {
+    if (!isCursorConfigured()) {
+      return res.status(400).json({
+        error: 'Save a Cursor API key first.',
+        ...modelsPayload(),
+      });
+    }
+    const catalog = await refreshCursorModels(PROJECT_ROOT);
+    res.json({
+      ok: !catalog.error,
+      error: catalog.error || undefined,
+      ...getCursorSetupStatus(PROJECT_ROOT),
+      ...modelsPayload(),
+      cursorConfigured: isCursorConfigured(),
+      cursorModel: cursorModel(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, ...modelsPayload() });
+  }
+});
+
+/** PUT /api/cursor-settings - Save Cursor API key locally and apply it now */
+app.put('/api/cursor-settings', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const status = saveCursorSetup(PROJECT_ROOT, {
+      apiKey: body.apiKey,
+      model: body.model,
+      clear: false,
+    });
+    if (isCursorConfigured() && body.apiKey) {
+      await refreshCursorModels(PROJECT_ROOT);
+    }
+    res.json({
+      ok: true,
+      ...status,
+      ...modelsPayload(),
+      cursorConfigured: isCursorConfigured(),
+      cursorModel: cursorModel(),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** DELETE /api/cursor-settings - Remove the key saved in the app */
+app.delete('/api/cursor-settings', (req, res) => {
+  try {
+    const status = saveCursorSetup(PROJECT_ROOT, { clear: true });
+    res.json({ ok: true, ...status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** PUT /api/github-settings - Save a GitHub token locally for gh / Ship */
+app.put('/api/github-settings', (req, res) => {
+  try {
+    const status = saveGithubSetup(PROJECT_ROOT, {
+      token: (req.body || {}).token,
+      clear: false,
+    });
+    res.json({ ok: true, ...status });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** DELETE /api/github-settings - Remove the GitHub token saved in the app */
+app.delete('/api/github-settings', (req, res) => {
+  try {
+    const status = saveGithubSetup(PROJECT_ROOT, { clear: true });
+    res.json({ ok: true, ...status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /** GET /api/features-files - List candidate FEATURES.md files under the project root */
@@ -325,6 +451,60 @@ function writeFeaturesFile(content) {
   fs.writeFileSync(activeFeaturesPath, content, 'utf-8');
 }
 
+function findFeatureInParsed(parsed, featureId) {
+  for (const category of parsed.categories) {
+    const feature = category.features.find((item) => item.featureId === featureId);
+    if (feature) return { feature, category };
+  }
+  return null;
+}
+
+function loadRegistry() {
+  const content = readFeaturesFile();
+  const { preamble, postamble } = extractPreambleAndPostamble(content);
+  const parsed = parseFeaturesMd(content);
+  return { content, preamble, postamble, parsed };
+}
+
+function saveRegistry(parsed, preamble, postamble) {
+  writeFeaturesFile(serializeToMarkdown(parsed, preamble || '', postamble || ''));
+}
+
+function updateFeatureFields(featureId, patch) {
+  const { preamble, postamble, parsed } = loadRegistry();
+  const found = findFeatureInParsed(parsed, featureId);
+  if (!found) return null;
+  Object.assign(found.feature, patch);
+  saveRegistry(parsed, preamble, postamble);
+  return found.feature;
+}
+
+function buildWorkspacePayload(feature) {
+  const specRoot = resolveSpecRoot(activeFeaturesPath);
+  const paths = resolveArtifactPaths(specRoot, feature);
+  const workflow = getFeatureWorkflow(specRoot, feature.featureId);
+  const artifacts = {
+    plan: describeArtifact(paths.planPath, paths.defaultPlanPath),
+    tasks: describeArtifact(paths.tasksPath, paths.defaultTasksPath),
+    review: describeArtifact(paths.reviewPath, paths.reviewPath),
+    completion: describeArtifact(paths.completionPath, paths.completionPath),
+  };
+  return {
+    feature,
+    stage: pipelineStage(feature.status),
+    workflow,
+    specRoot: path.basename(specRoot),
+    artifacts,
+    ship: describeShip({
+      feature,
+      completionContent: artifacts.completion.content,
+      reviewContent: artifacts.review.content,
+      workflow,
+      cwd: resolveGitRoot(activeFeaturesPath),
+    }),
+  };
+}
+
 /** GET /api/features - Parse and return features as JSON */
 app.get('/api/features', (req, res) => {
   try {
@@ -353,6 +533,301 @@ app.put('/api/features', (req, res) => {
     const content = serializeToMarkdown(parsed, preamble || '', postamble || '');
     writeFeaturesFile(content);
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/features/:featureId/workspace - Feature plus plan/task/review artifacts */
+app.get('/api/features/:featureId/workspace', (req, res) => {
+  try {
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    res.json(buildWorkspacePayload(found.feature));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/features/:featureId/start-planning
+ * Requires { confirmed: true }. Scaffolds templates, then starts a local Cursor agent.
+ */
+app.post('/api/features/:featureId/start-planning', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Start planning requires an explicit confirmed: true payload.' });
+    }
+    requireCursorConfigured();
+    const { preamble, postamble, parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    assertNoActiveRun(specRoot, found.feature.featureId);
+    const { paths, created } = scaffoldArtifacts(specRoot, found.feature);
+    found.feature.planDocument = toSpecRelativePath(specRoot, paths.planPath);
+    saveRegistry(parsed, preamble, postamble);
+    startPlanningRun({
+      specRoot,
+      feature: found.feature,
+      featuresAbsPath: activeFeaturesPath,
+      updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
+    });
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({
+      ok: true,
+      created,
+      workspace: buildWorkspacePayload(reloaded ? reloaded.feature : found.feature),
+    });
+  } catch (err) {
+    const status = /CURSOR_API_KEY|confirmed/.test(err.message) ? 400
+      : /already active/.test(err.message) ? 409
+      : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/** PUT /api/features/:featureId/artifacts - Save plan or tasks markdown */
+app.put('/api/features/:featureId/artifacts', (req, res) => {
+  try {
+    const kind = (req.body || {}).kind;
+    const content = (req.body || {}).content;
+    if (kind !== 'plan' && kind !== 'tasks') {
+      return res.status(400).json({ error: 'kind must be "plan" or "tasks"' });
+    }
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const paths = resolveArtifactPaths(specRoot, found.feature);
+    const targetPath = kind === 'plan'
+      ? (paths.planPath || paths.defaultPlanPath)
+      : (paths.tasksPath || paths.defaultTasksPath);
+    writeText(targetPath, content);
+    res.json({ ok: true, workspace: buildWorkspacePayload(found.feature) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/features/:featureId/approve-plan
+ * Records human approval. Does not start implementation.
+ */
+app.post('/api/features/:featureId/approve-plan', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Approve plan requires an explicit confirmed: true payload.' });
+    }
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const paths = resolveArtifactPaths(specRoot, found.feature);
+    const tasksPath = paths.tasksPath || paths.defaultTasksPath;
+    const currentTasks = fs.existsSync(tasksPath) ? fs.readFileSync(tasksPath, 'utf-8') : null;
+    if (!currentTasks) {
+      return res.status(400).json({ error: 'Task file does not exist yet. Start planning first.' });
+    }
+    writeText(tasksPath, checkPlanApprovalBoxes(currentTasks));
+    const workflow = updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      stage: 'planApproved',
+      planApprovedAt: new Date().toISOString(),
+    });
+    res.json({
+      ok: true,
+      workflow,
+      workspace: buildWorkspacePayload(found.feature),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/features/:featureId/revise - Resume the same agent with a revision note */
+app.post('/api/features/:featureId/revise', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Revise requires an explicit confirmed: true payload.' });
+    }
+    const note = String((req.body.note || '')).trim();
+    if (!note) return res.status(400).json({ error: 'Revision note is required.' });
+    requireCursorConfigured();
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    assertNoActiveRun(specRoot, found.feature.featureId);
+    updateFeatureWorkflow(specRoot, found.feature.featureId, { planApprovedAt: null });
+    startRevisionRun({
+      specRoot,
+      feature: found.feature,
+      featuresAbsPath: activeFeaturesPath,
+      note,
+      updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
+    });
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({ ok: true, workspace: buildWorkspacePayload(reloaded ? reloaded.feature : found.feature) });
+  } catch (err) {
+    const status = /CURSOR_API_KEY|confirmed|Revision note/.test(err.message) ? 400
+      : /already active/.test(err.message) ? 409
+      : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/** POST /api/features/:featureId/implement - Starts coding only after plan approval */
+app.post('/api/features/:featureId/implement', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Implement requires an explicit confirmed: true payload.' });
+    }
+    requireCursorConfigured();
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const workflow = getFeatureWorkflow(specRoot, found.feature.featureId);
+    if (!workflow || !workflow.planApprovedAt) {
+      return res.status(400).json({ error: 'Approve the plan before starting implementation.' });
+    }
+    assertNoActiveRun(specRoot, found.feature.featureId);
+    startImplementRun({
+      specRoot,
+      feature: found.feature,
+      featuresAbsPath: activeFeaturesPath,
+      updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
+    });
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({ ok: true, workspace: buildWorkspacePayload(reloaded ? reloaded.feature : found.feature) });
+  } catch (err) {
+    const status = /CURSOR_API_KEY|confirmed|Approve the plan/.test(err.message) ? 400
+      : /already active/.test(err.message) ? 409
+      : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/features/:featureId/ship
+ * Requires { confirmed: true }. Approves review artifacts and opens a draft MR.
+ * Does not merge.
+ */
+app.post('/api/features/:featureId/ship', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Ship requires an explicit confirmed: true payload.' });
+    }
+    const prTitle = String(req.body.title || '').trim();
+    const prBody = String(req.body.body || '').trim();
+    if (!prTitle || !prBody) {
+      return res.status(400).json({ error: 'Review and edit the draft PR title and description before creating the merge request.' });
+    }
+    const { parsed, preamble, postamble } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const cwd = resolveGitRoot(activeFeaturesPath);
+    const paths = resolveArtifactPaths(specRoot, found.feature);
+    const completion = describeArtifact(paths.completionPath, paths.completionPath);
+    const review = describeArtifact(paths.reviewPath, paths.reviewPath);
+    const shipInfo = describeShip({
+      feature: found.feature,
+      completionContent: completion.content,
+      reviewContent: review.content,
+      workflow: getFeatureWorkflow(specRoot, found.feature.featureId),
+    });
+
+    if (shipInfo.missing.length) {
+      return res.status(400).json({
+        error: `Review artifacts are incomplete: missing ${shipInfo.missing.join(' and ')}.`,
+      });
+    }
+    if (shipInfo.securityBlocked) {
+      updateFeatureFields(found.feature.featureId, { status: STATUS_BLOCKED });
+      updateFeatureWorkflow(specRoot, found.feature.featureId, {
+        stage: 'blocked',
+        lastError: shipInfo.securityReason,
+      });
+      const blocked = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+      return res.status(409).json({
+        error: shipInfo.securityReason,
+        workspace: buildWorkspacePayload(blocked ? blocked.feature : found.feature),
+      });
+    }
+
+    updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      stage: 'shipping',
+      shipApprovedAt: new Date().toISOString(),
+      lastError: null,
+    });
+
+    const created = createFeatureMergeRequest({
+      cwd,
+      feature: found.feature,
+      completionContent: completion.content,
+      reviewContent: review.content,
+      title: prTitle,
+      body: prBody,
+    });
+
+    found.feature.notes = mergeNotesWithPrUrl(found.feature.notes, created.url);
+    found.feature.status = STATUS_READY_TO_MERGE;
+    saveRegistry(parsed, preamble, postamble);
+    commitTrackingFileIfNeeded(cwd, activeFeaturesPath, found.feature);
+    updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      stage: 'ready',
+      mrUrl: created.url,
+      lastError: null,
+    });
+
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({
+      ok: true,
+      mrUrl: created.url,
+      reused: created.reused,
+      committed: created.committed,
+      workspace: buildWorkspacePayload(reloaded ? reloaded.feature : found.feature),
+    });
+  } catch (err) {
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    updateFeatureWorkflow(specRoot, req.params.featureId, {
+      lastError: err.message,
+    });
+    const status = /confirmed|incomplete|missing|feature branch|named git branch/i.test(err.message) ? 400
+      : /gh |git push|not installed|auth/i.test(err.message) ? 400
+      : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/** POST /api/features/:featureId/cancel - Cancel the in-flight Cursor run */
+app.post('/api/features/:featureId/cancel', async (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Cancel requires an explicit confirmed: true payload.' });
+    }
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    await cancelFeatureRun(specRoot, req.params.featureId, activeFeaturesPath);
+    const found = findFeatureInParsed(loadRegistry().parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    res.json({ ok: true, workspace: buildWorkspacePayload(found.feature) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

@@ -22,6 +22,7 @@
       <button type="button" class="btn btn-primary" id="createFeature">+ Create New Feature</button>
       <button type="button" class="btn btn-secondary" id="addCategory">+ Add Category</button>
       <button type="button" class="btn btn-secondary" id="refresh">Refresh</button>
+      <button type="button" class="btn btn-secondary" id="openSettings">Settings</button>
     </div>
   </header>
 
@@ -64,6 +65,8 @@
           <label for="status">Status</label>
           <select id="status">
             <option value="📋 Planned">📋 Planned</option>
+            <option value="📝 Planning">📝 Planning</option>
+            <option value="👀 PlanReview">👀 PlanReview</option>
             <option value="🔨 WorkInProgress">🔨 WorkInProgress</option>
             <option value="🧪 Testing">🧪 Testing</option>
             <option value="🟢 ReadyToMerge">🟢 ReadyToMerge</option>
@@ -95,8 +98,225 @@
     </div>
   </div>
 
+  <div class="workspace" id="workspace" hidden>
+    <div class="workspace-panel">
+      <div class="workspace-header">
+        <div>
+          <p class="workspace-id" id="workspaceFeatureId"></p>
+          <h2 id="workspaceTitle">Feature workspace</h2>
+        </div>
+        <button type="button" class="close" id="closeWorkspace" aria-label="Close workspace">&times;</button>
+      </div>
+      <div class="workspace-toolbar">
+        <span class="workspace-status" id="workspaceStatus"></span>
+        <span class="pipeline-chip" id="workspaceChip" hidden></span>
+        <button type="button" class="btn btn-primary" id="startPlanning">Start planning</button>
+        <button type="button" class="btn btn-secondary" id="approvePlan">Approve plan</button>
+        <button type="button" class="btn btn-secondary" id="startImplement">Start implementation</button>
+        <button type="button" class="btn btn-secondary" id="cancelRun">Cancel run</button>
+        <button type="button" class="btn btn-secondary" id="editFeatureFromWorkspace">Edit feature</button>
+      </div>
+      <div class="agent-live" id="agentLive">
+        <div class="agent-live-header">
+          <h3>Agent activity</h3>
+          <span id="agentLiveStatus">No run yet</span>
+        </div>
+        <ol class="agent-transcript" id="agentTranscript"></ol>
+      </div>
+      <div class="workspace-tabs" role="tablist">
+        <button type="button" class="workspace-tab is-active" data-tab="plan" role="tab">Plan / Tasks</button>
+        <button type="button" class="workspace-tab" data-tab="implementation" role="tab">Implementation</button>
+        <button type="button" class="workspace-tab" data-tab="review" role="tab">Review</button>
+        <button type="button" class="workspace-tab" data-tab="ship" role="tab">Ship</button>
+      </div>
+      <div class="workspace-body">
+        <section class="workspace-pane is-active" data-pane="plan">
+          <div class="artifact-block">
+            <div class="artifact-header">
+              <h3>Plan</h3>
+              <span class="artifact-path" id="planPath"></span>
+              <div class="view-toggle" role="group" aria-label="Plan view">
+                <button type="button" class="btn btn-secondary is-active" data-preview-for="plan">Preview</button>
+                <button type="button" class="btn btn-secondary" data-edit-for="plan">Edit</button>
+              </div>
+              <button type="button" class="btn btn-secondary" id="savePlan">Save plan</button>
+            </div>
+            <div class="md-preview" id="planPreview"></div>
+            <textarea id="planEditor" rows="16" spellcheck="false" hidden placeholder="Start planning to create a plan from the template."></textarea>
+          </div>
+          <div class="artifact-block">
+            <div class="artifact-header">
+              <h3>Tasks</h3>
+              <span class="artifact-path" id="tasksPath"></span>
+              <div class="view-toggle" role="group" aria-label="Tasks view">
+                <button type="button" class="btn btn-secondary is-active" data-preview-for="tasks">Preview</button>
+                <button type="button" class="btn btn-secondary" data-edit-for="tasks">Edit</button>
+              </div>
+              <button type="button" class="btn btn-secondary" id="saveTasks">Save tasks</button>
+            </div>
+            <div class="md-preview" id="tasksPreview"></div>
+            <textarea id="tasksEditor" rows="16" spellcheck="false" hidden placeholder="Start planning to create a task list from the template."></textarea>
+          </div>
+          <div class="artifact-block">
+            <div class="artifact-header">
+              <h3>Revise with the agent</h3>
+            </div>
+            <textarea id="revisionNote" rows="4" spellcheck="false" placeholder="Tell the agent what to change in the plan and tasks."></textarea>
+            <div class="form-actions">
+              <button type="button" class="btn btn-primary" id="sendRevision">Send revision</button>
+            </div>
+          </div>
+        </section>
+        <section class="workspace-pane" data-pane="implementation">
+          <p class="workspace-placeholder" id="cursorConfigHint"></p>
+          <p id="runMeta">No Cursor run yet.</p>
+          <pre class="artifact-preview" id="runSummary">The latest agent summary will appear here.</pre>
+          <p class="run-error" id="runError" hidden></p>
+        </section>
+        <section class="workspace-pane" data-pane="review">
+          <div class="artifact-block">
+            <h3>Completion summary</h3>
+            <div class="md-preview" id="completionPreview">Not written yet.</div>
+          </div>
+          <div class="artifact-block">
+            <h3>Security review</h3>
+            <div class="md-preview" id="reviewPreview">Not written yet.</div>
+          </div>
+        </section>
+        <section class="workspace-pane" data-pane="ship">
+          <p class="workspace-placeholder" id="shipStatus">Review the generated PR title and description, edit them if needed, then create a draft merge request. This board does not merge.</p>
+          <p id="shipMissing" hidden></p>
+          <p class="run-error" id="shipBlockers" hidden></p>
+          <p id="shipGithubHint" hidden>
+            <button type="button" class="btn btn-secondary" id="openGithubSettingsFromShip">Open GitHub settings</button>
+          </p>
+          <p id="shipMrLine" hidden>
+            Merge request: <a id="shipMrLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+          </p>
+          <div class="form-group">
+            <label for="shipTitle">PR title</label>
+            <input type="text" id="shipTitle" spellcheck="true" placeholder="Generated after the completion summary exists">
+          </div>
+          <div class="form-group">
+            <label for="shipBody">PR description <span id="shipDraftHint" class="field-hint"></span></label>
+            <textarea id="shipBody" rows="16" spellcheck="true" placeholder="The implementation agent writes this from the completion summary. Edit before creating the PR."></textarea>
+          </div>
+          <div class="artifact-block" id="shipFilesBlock" hidden>
+            <h3>Files in this draft</h3>
+            <ul class="ship-files" id="shipFiles"></ul>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-primary" id="createMergeRequest">Create draft PR</button>
+            <button type="button" class="btn btn-secondary" id="resetShipDraft">Reset to generated</button>
+            <button type="button" class="btn btn-secondary" id="copyMergeRequest" hidden>Copy link</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings" id="settings" hidden>
+    <div class="settings-panel">
+      <div class="settings-header">
+        <div>
+          <p class="workspace-id">Integrations</p>
+          <h2>Settings</h2>
+        </div>
+        <button type="button" class="close" id="closeSettings" aria-label="Close settings">&times;</button>
+      </div>
+      <div class="settings-nav" role="tablist">
+        <button type="button" class="settings-tab is-active" data-settings-tab="ide" role="tab">IDE tools</button>
+        <button type="button" class="settings-tab" data-settings-tab="github" role="tab">GitHub</button>
+      </div>
+      <div class="settings-body">
+        <section class="settings-pane is-active" data-settings-pane="ide">
+          <p class="settings-lead">Choose which coding agent the board can launch. Keys stay on this machine and are never written to FEATURES.md.</p>
+          <article class="integration-card">
+            <div class="integration-card-head">
+              <div>
+                <h3>Cursor</h3>
+                <p>Local Cursor agents for planning, revision, and implementation.</p>
+              </div>
+              <span class="integration-status" id="cursorCardStatus">Not configured</span>
+            </div>
+            <form id="cursorSettingsForm">
+              <p class="settings-copy">
+                Get a key from
+                <a href="https://cursor.com/dashboard/api" target="_blank" rel="noopener noreferrer">Cursor Dashboard → API Keys</a>.
+              </p>
+              <p class="settings-status" id="cursorSettingsStatus">No key saved yet.</p>
+              <div class="form-group">
+                <label for="cursorApiKey">Cursor API key</label>
+                <input type="password" id="cursorApiKey" autocomplete="off" placeholder="cursor_…">
+              </div>
+              <div class="form-group">
+                <label for="cursorModel">Model</label>
+                <div class="model-row">
+                  <select id="cursorModel"></select>
+                  <button type="button" class="btn btn-secondary" id="refreshCursorModels">Refresh models</button>
+                </div>
+                <p class="settings-hint" id="cursorModelsHint">Models refresh when the app starts after you save a key.</p>
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn btn-secondary" id="clearCursorSettings">Remove saved key</button>
+                <button type="submit" class="btn btn-primary">Save and use</button>
+              </div>
+            </form>
+          </article>
+          <article class="integration-card is-soon">
+            <div class="integration-card-head">
+              <div>
+                <h3>Claude</h3>
+                <p>Anthropic Claude as an agent backend.</p>
+              </div>
+              <span class="integration-status is-soon">Coming later</span>
+            </div>
+          </article>
+          <article class="integration-card is-soon">
+            <div class="integration-card-head">
+              <div>
+                <h3>GitHub Copilot</h3>
+                <p>Copilot coding agent as an alternate IDE backend.</p>
+              </div>
+              <span class="integration-status is-soon">Coming later</span>
+            </div>
+          </article>
+        </section>
+        <section class="settings-pane" data-settings-pane="github">
+          <p class="settings-lead">Used only to open draft pull requests from Ship. This is not GitHub Copilot.</p>
+          <article class="integration-card">
+            <div class="integration-card-head">
+              <div>
+                <h3>GitHub</h3>
+                <p>Authenticate <code>gh</code> so Ship can create or update a draft PR.</p>
+              </div>
+              <span class="integration-status" id="githubCardStatus">Not configured</span>
+            </div>
+            <form id="githubSettingsForm">
+              <p class="settings-copy">
+                Create a token at
+                <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer">GitHub → Settings → Developer settings → Tokens</a>.
+                Classic tokens need the <code>repo</code> scope. Fine-grained tokens need Contents and Pull requests read/write.
+              </p>
+              <p class="settings-status" id="githubSettingsStatus">No token saved yet.</p>
+              <div class="form-group">
+                <label for="githubToken">GitHub token</label>
+                <input type="password" id="githubToken" autocomplete="off" placeholder="ghp_… or github_pat_…">
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn btn-secondary" id="clearGithubSettings">Remove saved token</button>
+                <button type="submit" class="btn btn-primary">Save and use</button>
+              </div>
+            </form>
+          </article>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
+  <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
