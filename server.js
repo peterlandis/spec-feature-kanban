@@ -49,6 +49,11 @@ import {
   describeShip,
   mergeNotesWithPrUrl,
 } from './workflow/ship.js';
+import {
+  buildFeatureGraph,
+  flattenFeaturesFromCategories,
+  loadPlanContentsForFeatures,
+} from './workflow/feature-relations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = __dirname;
@@ -595,8 +600,14 @@ app.get('/api/features', (req, res) => {
     const content = readFeaturesFile();
     const { preamble, postamble } = extractPreambleAndPostamble(content);
     const parsed = parseFeaturesMd(content);
+    const categories = attachWorkflowSummaries(parsed.categories);
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const flat = flattenFeaturesFromCategories(categories);
+    const planContentsById = loadPlanContentsForFeatures(specRoot, flat);
+    const graph = buildFeatureGraph(flat, { planContentsById });
     res.json({
-      categories: attachWorkflowSummaries(parsed.categories),
+      categories,
+      graph,
       preamble,
       postamble,
     });
