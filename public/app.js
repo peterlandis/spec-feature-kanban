@@ -13,6 +13,7 @@ let state = {
 };
 
 let uiState = {
+  mainView: 'board',
   searchQuery: '',
   workspaceFeatureId: null,
   workspaceTab: 'plan',
@@ -38,6 +39,22 @@ let configState = {
 };
 
 let workspacePollTimer = null;
+let processPollTimer = null;
+
+const PROCESS_MAIN_TRACK = [
+  { id: 'not-started', label: 'Not started' },
+  { id: 'planning', label: 'Planning' },
+  { id: 'plan-review', label: 'Plan review' },
+  { id: 'coding', label: 'Coding' },
+  { id: 'reviewing', label: 'Reviewing' },
+  { id: 'ready-to-merge', label: 'Ready to merge' },
+  { id: 'complete', label: 'Complete' },
+];
+
+const PROCESS_SIDE_TRACK = [
+  { id: 'blocked', label: 'Blocked' },
+  { id: 'paused', label: 'Paused' },
+];
 
 async function fetchConfig() {
   const res = await fetch(`${API}/config`);
@@ -522,6 +539,206 @@ function applySearch(features) {
   });
 }
 
+function getAllFeatures() {
+  return state.categories.flatMap((category) =>
+    (category.features || []).map((feature) => ({
+      ...feature,
+      categoryTitle: feature.categoryTitle || category.title,
+    })),
+  );
+}
+
+function anyFeatureLive(features) {
+  return features.some((f) => f.runStatus === 'starting' || f.runStatus === 'running');
+}
+
+function stopProcessPolling() {
+  if (processPollTimer) {
+    clearInterval(processPollTimer);
+    processPollTimer = null;
+  }
+}
+
+function syncProcessPolling(anyLive) {
+  const processView = document.getElementById('processView');
+  const shouldPoll = !!anyLive
+    && uiState.mainView === 'process'
+    && processView
+    && !processView.hidden;
+  if (shouldPoll && !processPollTimer) {
+    processPollTimer = setInterval(() => {
+      if (uiState.mainView !== 'process') return;
+      load().catch(() => {});
+    }, 1000);
+  }
+  if (!shouldPoll) stopProcessPolling();
+}
+
+function syncViewToggleButtons() {
+  const isProcess = uiState.mainView === 'process';
+  const boardBtn = document.getElementById('viewBoard');
+  const processBtn = document.getElementById('viewProcess');
+  if (boardBtn) {
+    boardBtn.classList.toggle('is-active', !isProcess);
+    boardBtn.setAttribute('aria-pressed', String(!isProcess));
+  }
+  if (processBtn) {
+    processBtn.classList.toggle('is-active', isProcess);
+    processBtn.setAttribute('aria-pressed', String(isProcess));
+  }
+}
+
+function setMainView(view) {
+  uiState.mainView = view === 'process' ? 'process' : 'board';
+  renderMainView();
+}
+
+function renderMainView() {
+  const isProcess = uiState.mainView === 'process';
+  const columns = document.getElementById('columns');
+  const processView = document.getElementById('processView');
+  if (columns) columns.hidden = isProcess;
+  if (processView) processView.hidden = !isProcess;
+  syncViewToggleButtons();
+  if (isProcess) renderProcess();
+  else {
+    stopProcessPolling();
+    renderColumns();
+  }
+}
+
+function renderProcessOccupant(feature) {
+  const live = feature.runStatus === 'starting' || feature.runStatus === 'running';
+  const waiting = !!feature.waitingOnHuman && !live;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'process-occupant';
+  if (live) btn.classList.add('is-live');
+  if (waiting) btn.classList.add('is-waiting');
+  const badge = live
+    ? '<span class="process-run-badge" aria-hidden="true">Run</span>'
+    : '';
+  const activity = feature.activityLine
+    ? `<span class="process-activity">${escapeHtml(feature.activityLine)}</span>`
+    : '';
+  const sr = live ? 'Live agent. ' : (waiting ? 'Waiting on human. ' : '');
+  btn.setAttribute('aria-label', `${sr}${feature.featureId}: ${feature.title || feature.featureId}`);
+  btn.innerHTML = `
+    <span class="process-occupant-top">
+      <span class="process-occupant-id">${escapeHtml(feature.featureId)}</span>
+      ${badge}
+    </span>
+    <span class="process-occupant-title">${escapeHtml(feature.title || '')}</span>
+    ${activity}
+  `;
+  btn.addEventListener('click', () => {
+    openWorkspace(feature.featureId).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+  });
+  return btn;
+}
+
+function buildProcessStageNode(stage, occupants) {
+  const count = occupants.length;
+  const stageLive = occupants.some((f) => f.runStatus === 'starting' || f.runStatus === 'running');
+  const stageWaiting = occupants.some((f) => f.waitingOnHuman && f.runStatus !== 'starting' && f.runStatus !== 'running');
+
+  const node = document.createElement('div');
+  node.className = 'process-stage';
+  node.dataset.stage = stage.id;
+  if (stageLive) node.classList.add('is-live');
+  if (stageWaiting && !stageLive) node.classList.add('is-waiting');
+
+  let ariaExtra = '';
+  if (stageLive) ariaExtra += ', live agent';
+  if (stageWaiting) ariaExtra += ', waiting on human';
+  node.setAttribute(
+    'aria-label',
+    `${stage.label}, ${count} feature${count === 1 ? '' : 's'}${ariaExtra}`,
+  );
+
+  const header = document.createElement('div');
+  header.className = 'process-stage-header';
+  header.innerHTML = `
+    <span class="process-stage-name">${escapeHtml(stage.label)}</span>
+    <span class="process-stage-count" aria-hidden="true">${count}</span>
+  `;
+  if (stageLive) {
+    const liveCue = document.createElement('span');
+    liveCue.className = 'process-live-cue';
+    liveCue.textContent = 'Live';
+    liveCue.setAttribute('aria-hidden', 'true');
+    header.appendChild(liveCue);
+  } else if (stageWaiting) {
+    const waitCue = document.createElement('span');
+    waitCue.className = 'process-wait-cue';
+    waitCue.textContent = 'Waiting';
+    waitCue.setAttribute('aria-hidden', 'true');
+    header.appendChild(waitCue);
+  }
+  node.appendChild(header);
+
+  const list = document.createElement('div');
+  list.className = 'process-occupants';
+  for (const feature of occupants) {
+    list.appendChild(renderProcessOccupant(feature));
+  }
+  node.appendChild(list);
+  return node;
+}
+
+function renderProcess() {
+  const graph = document.getElementById('processGraph');
+  if (!graph) return;
+
+  const features = applySearch(getAllFeatures());
+  const byStage = new Map();
+  for (const stage of [...PROCESS_MAIN_TRACK, ...PROCESS_SIDE_TRACK]) {
+    byStage.set(stage.id, []);
+  }
+  for (const feature of features) {
+    const stageId = feature.graphStage || 'not-started';
+    if (!byStage.has(stageId)) byStage.set(stageId, []);
+    byStage.get(stageId).push(feature);
+  }
+
+  graph.innerHTML = '';
+
+  const mainRow = document.createElement('div');
+  mainRow.className = 'process-main-track';
+  PROCESS_MAIN_TRACK.forEach((stage, index) => {
+    if (index > 0) {
+      const edge = document.createElement('div');
+      edge.className = 'process-edge';
+      edge.setAttribute('aria-hidden', 'true');
+      edge.textContent = '→';
+      mainRow.appendChild(edge);
+    }
+    mainRow.appendChild(buildProcessStageNode(stage, byStage.get(stage.id) || []));
+  });
+
+  const revise = document.createElement('div');
+  revise.className = 'process-revise-hints';
+  revise.setAttribute('aria-hidden', 'true');
+  revise.innerHTML = `
+    <span class="process-revise">Plan review ↺ Planning (revise plan)</span>
+    <span class="process-revise">Reviewing ↺ Coding (revise code or docs)</span>
+  `;
+
+  const sideRow = document.createElement('div');
+  sideRow.className = 'process-side-track';
+  for (const stage of PROCESS_SIDE_TRACK) {
+    sideRow.appendChild(buildProcessStageNode(stage, byStage.get(stage.id) || []));
+  }
+
+  const blockedLinks = document.createElement('p');
+  blockedLinks.className = 'process-side-note';
+  blockedLinks.setAttribute('aria-hidden', 'true');
+  blockedLinks.textContent = 'Blocked and Paused can be reached from active work (dashed paths in the plan topology).';
+
+  graph.append(mainRow, revise, sideRow, blockedLinks);
+  syncProcessPolling(anyFeatureLive(features));
+}
+
 function pipelineChip(featureOrStatus, workflow) {
   const feature = featureOrStatus && typeof featureOrStatus === 'object'
     ? featureOrStatus
@@ -623,7 +840,7 @@ async function deleteFeature(featureId) {
   }
 
   await persist();
-  renderColumns();
+  renderMainView();
   toast('Feature deleted');
 }
 
@@ -667,7 +884,7 @@ async function deleteCategory(categoryTitle) {
 
   state.categories = state.categories.filter((c) => c.title !== categoryTitle);
   await persist();
-  renderColumns();
+  renderMainView();
   toast('Category deleted');
 }
 
@@ -804,7 +1021,7 @@ async function handleDrop(feature, fromColumn, toColumn) {
   }
 
   await persist();
-  renderColumns();
+  renderMainView();
   toast('Updated');
 }
 
@@ -1156,7 +1373,7 @@ function renderWorkspace(payload) {
 
   const hint = document.getElementById('cursorConfigHint');
   hint.textContent = configured
-    ? `Local Cursor agent (${configState.cursorModel || 'composer-2.5'}). One run per repo.`
+    ? `Local Cursor agent (${configState.cursorModel || 'composer-2.5'}). One concurrent run per feature.`
     : 'Save a Cursor API key in Settings → IDE tools to fire agents from the app.';
 
   const runMeta = document.getElementById('runMeta');
@@ -1732,14 +1949,14 @@ async function handleFormSubmit(e) {
 
   document.getElementById('featureModal').classList.remove('open');
   await persist();
-  renderColumns();
+  renderMainView();
   toast(isEdit ? 'Feature updated' : 'Feature created');
 }
 
 async function load() {
   try {
     state = await fetchFeatures();
-    renderColumns();
+    renderMainView();
   } catch (err) {
     toast(err.message || 'Failed to load', 'error');
   }
@@ -1757,7 +1974,7 @@ async function addCategory() {
 
   state.categories.push({ title: name, description: '', features: [] });
   await persist();
-  renderColumns();
+  renderMainView();
   toast('Category added');
 }
 
@@ -1810,6 +2027,8 @@ document.getElementById('addCategory')?.addEventListener('click', () => {
   addCategory().catch((err) => toast(err.message || 'Failed to add category', 'error'));
 });
 document.getElementById('refresh').addEventListener('click', load);
+document.getElementById('viewBoard')?.addEventListener('click', () => setMainView('board'));
+document.getElementById('viewProcess')?.addEventListener('click', () => setMainView('process'));
 document.getElementById('openSettings').addEventListener('click', () => openSettings());
 document.getElementById('closeSettings').addEventListener('click', closeSettings);
 document.getElementById('openGithubSettingsFromShip').addEventListener('click', openGithubSettings);
@@ -1933,13 +2152,13 @@ const searchEl = document.getElementById('searchFeatures');
 if (searchEl) {
   searchEl.addEventListener('input', () => {
     uiState.searchQuery = searchEl.value;
-    renderColumns();
+    renderMainView();
   });
   searchEl.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       searchEl.value = '';
       uiState.searchQuery = '';
-      renderColumns();
+      renderMainView();
     }
   });
 }

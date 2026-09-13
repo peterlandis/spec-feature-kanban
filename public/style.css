@@ -151,6 +151,11 @@ body {
   min-width: max-content;
 }
 
+.columns[hidden],
+.process-view[hidden] {
+  display: none !important;
+}
+
 .column {
   flex: 0 0 320px;
   min-width: 320px;
@@ -1103,6 +1108,218 @@ body {
   overflow: auto;
 }
 
+.view-toggle-header {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.view-toggle-header .btn.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.process-view {
+  padding: 1rem 1.25rem 2rem;
+  overflow-x: auto;
+}
+
+.process-lead {
+  margin: 0 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  max-width: 52rem;
+}
+
+.process-graph {
+  min-width: min-content;
+}
+
+.process-main-track {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  padding-bottom: 0.75rem;
+}
+
+.process-edge {
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  padding: 0 0.15rem;
+  flex-shrink: 0;
+}
+
+.process-stage {
+  flex: 0 0 11.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 7rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.process-stage.is-live {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.35);
+}
+
+.process-stage.is-waiting {
+  border-color: var(--wip);
+}
+
+.process-stage-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-hover);
+}
+
+.process-stage-name {
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.process-stage-count {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.process-live-cue,
+.process-wait-cue {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.12rem 0.35rem;
+  border-radius: 4px;
+}
+
+.process-live-cue {
+  background: rgba(88, 166, 255, 0.2);
+  color: var(--accent);
+}
+
+.process-wait-cue {
+  background: rgba(210, 153, 34, 0.2);
+  color: var(--wip);
+}
+
+.process-occupants {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  flex: 1;
+}
+
+.process-occupant {
+  text-align: left;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.45rem;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.process-occupant:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.process-occupant.is-live {
+  border-color: var(--accent);
+}
+
+.process-occupant.is-waiting {
+  border-style: dashed;
+  border-color: var(--wip);
+}
+
+.process-occupant-top {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.process-occupant-id {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.process-run-badge {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(88, 166, 255, 0.25);
+  color: var(--accent);
+  padding: 0.08rem 0.3rem;
+  border-radius: 3px;
+}
+
+.process-occupant-title {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-activity {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-revise-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin: 0.25rem 0 1rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.process-revise {
+  border-left: 2px dashed var(--border);
+  padding-left: 0.5rem;
+}
+
+.process-side-track {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.process-side-track .process-stage {
+  flex: 0 0 14rem;
+}
+
+.process-side-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
 @media (max-width: 720px) {
   .workspace-panel {
     width: 100%;
@@ -1112,5 +1329,13 @@ body {
   .select {
     min-width: 0;
     width: 100%;
+  }
+
+  .process-main-track {
+    flex-wrap: wrap;
+  }
+
+  .process-edge {
+    display: none;
   }
 }

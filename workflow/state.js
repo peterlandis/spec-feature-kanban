@@ -10,7 +10,24 @@ export function workflowStatePath(specRoot) {
 }
 
 function emptyState() {
-  return { features: {}, activeRun: null };
+  return { features: {}, activeRuns: {} };
+}
+
+function normalizeActiveRuns(parsed) {
+  const activeRuns = {};
+  if (parsed.activeRuns && typeof parsed.activeRuns === 'object') {
+    for (const [featureId, entry] of Object.entries(parsed.activeRuns)) {
+      if (entry && entry.featureId) activeRuns[featureId] = entry;
+      else if (entry) activeRuns[featureId] = { ...entry, featureId };
+    }
+  }
+  if (parsed.activeRun && parsed.activeRun.featureId) {
+    const id = parsed.activeRun.featureId;
+    if (!activeRuns[id]) {
+      activeRuns[id] = { ...parsed.activeRun, featureId: id };
+    }
+  }
+  return activeRuns;
 }
 
 function safeReadJson(filePath) {
@@ -18,17 +35,21 @@ function safeReadJson(filePath) {
     if (!fs.existsSync(filePath)) return emptyState();
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     if (!parsed || typeof parsed !== 'object') return emptyState();
-    if (!parsed.features || typeof parsed.features !== 'object') {
-      return { features: {}, activeRun: parsed.activeRun || null };
-    }
-    return { features: parsed.features, activeRun: parsed.activeRun || null };
+    const features = parsed.features && typeof parsed.features === 'object'
+      ? parsed.features
+      : {};
+    return { features, activeRuns: normalizeActiveRuns(parsed) };
   } catch {
     return emptyState();
   }
 }
 
 function writeState(filePath, state) {
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + '\n', 'utf-8');
+  const payload = {
+    features: state.features || {},
+    activeRuns: state.activeRuns || {},
+  };
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
 }
 
 export function readWorkflowState(specRoot) {
@@ -53,30 +74,66 @@ export function getFeatureWorkflow(specRoot, featureId) {
   return state.features[featureId] || null;
 }
 
-export function findActiveRun(specRoot) {
+function liveRunFromFeature(featureId, feature) {
+  if (!feature) return null;
+  if (feature.runStatus !== 'running' && feature.runStatus !== 'starting') return null;
+  return {
+    featureId,
+    agentId: feature.agentId,
+    runId: feature.runId,
+    kind: feature.kind,
+  };
+}
+
+/** All in-flight runs for this repo (one entry per feature). */
+export function findActiveRuns(specRoot) {
   const state = readWorkflowState(specRoot);
-  if (state.activeRun && state.activeRun.featureId) return state.activeRun;
+  const runs = { ...state.activeRuns };
   for (const [featureId, feature] of Object.entries(state.features)) {
-    if (feature && (feature.runStatus === 'running' || feature.runStatus === 'starting')) {
-      return { featureId, agentId: feature.agentId, runId: feature.runId, kind: feature.kind };
-    }
+    const live = liveRunFromFeature(featureId, feature);
+    if (live) runs[featureId] = { ...runs[featureId], ...live };
   }
-  return null;
+  return runs;
+}
+
+/** First active run (backward compatibility for cancel paths). */
+export function findActiveRun(specRoot) {
+  const runs = findActiveRuns(specRoot);
+  const ids = Object.keys(runs);
+  if (!ids.length) return null;
+  const featureId = ids[0];
+  return runs[featureId];
+}
+
+export function findActiveRunForFeature(specRoot, featureId) {
+  const runs = findActiveRuns(specRoot);
+  return runs[featureId] || null;
 }
 
 export function setActiveRun(specRoot, activeRun) {
   const filePath = workflowStatePath(specRoot);
   const state = safeReadJson(filePath);
-  state.activeRun = { ...activeRun, startedAt: new Date().toISOString() };
+  if (!state.activeRuns || typeof state.activeRuns !== 'object') {
+    state.activeRuns = {};
+  }
+  const featureId = activeRun.featureId;
+  state.activeRuns[featureId] = {
+    ...activeRun,
+    featureId,
+    startedAt: new Date().toISOString(),
+  };
   writeState(filePath, state);
-  return state.activeRun;
+  return state.activeRuns[featureId];
 }
 
 export function clearActiveRun(specRoot, featureId) {
   const filePath = workflowStatePath(specRoot);
   const state = safeReadJson(filePath);
-  if (!state.activeRun || !featureId || state.activeRun.featureId === featureId) {
-    state.activeRun = null;
+  if (!state.activeRuns || typeof state.activeRuns !== 'object') {
+    state.activeRuns = {};
+  }
+  if (featureId && state.activeRuns[featureId]) {
+    delete state.activeRuns[featureId];
   }
   writeState(filePath, state);
 }

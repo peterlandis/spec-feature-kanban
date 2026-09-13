@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 
+export const STATUS_PLANNED = '📋 Planned';
 export const STATUS_PLANNING = '📝 Planning';
 export const STATUS_PLAN_REVIEW = '👀 PlanReview';
 export const STATUS_WIP = '🔨 WorkInProgress';
@@ -200,4 +201,97 @@ export function pipelineStage(status, workflow) {
   if (value.includes('ReadyToMerge')) return 'ready';
   if (value.includes('Complete')) return 'complete';
   return null;
+}
+
+/** Graph node ids for the Process view (single vocabulary for server + client). */
+export const GRAPH_STAGES = {
+  NOT_STARTED: 'not-started',
+  PLANNING: 'planning',
+  PLAN_REVIEW: 'plan-review',
+  CODING: 'coding',
+  REVIEWING: 'reviewing',
+  READY_TO_MERGE: 'ready-to-merge',
+  COMPLETE: 'complete',
+  BLOCKED: 'blocked',
+  PAUSED: 'paused',
+};
+
+export const GRAPH_STAGE_LABELS = {
+  [GRAPH_STAGES.NOT_STARTED]: 'Not started',
+  [GRAPH_STAGES.PLANNING]: 'Planning',
+  [GRAPH_STAGES.PLAN_REVIEW]: 'Plan review',
+  [GRAPH_STAGES.CODING]: 'Coding',
+  [GRAPH_STAGES.REVIEWING]: 'Reviewing',
+  [GRAPH_STAGES.READY_TO_MERGE]: 'Ready to merge',
+  [GRAPH_STAGES.COMPLETE]: 'Complete',
+  [GRAPH_STAGES.BLOCKED]: 'Blocked',
+  [GRAPH_STAGES.PAUSED]: 'Paused',
+};
+
+function isLiveRun(workflow) {
+  const runStatus = workflow && workflow.runStatus;
+  return runStatus === 'starting' || runStatus === 'running';
+}
+
+/**
+ * Resolve which pipeline graph stage a feature occupies.
+ * @param {string} status - FEATURES.md status emoji string
+ * @param {object|null} workflow - sidecar entry from .features-workflow.json
+ */
+export function graphStage(status, workflow) {
+  const value = status || '';
+  const wf = workflow || {};
+  const live = isLiveRun(wf);
+  const kind = wf.kind || '';
+  const runStatus = wf.runStatus || '';
+
+  // Registry terminal statuses win over leftover sidecar errors/cancels
+  // (e.g. CORE-011 Complete after a crashed planning run).
+  if (value.includes('Complete')) return GRAPH_STAGES.COMPLETE;
+  if (value.includes('ReadyToMerge')) return GRAPH_STAGES.READY_TO_MERGE;
+
+  if (value.includes('Blocked') || (runStatus === 'error' && wf.lastError)) {
+    return GRAPH_STAGES.BLOCKED;
+  }
+  if (value.includes('Paused') || runStatus === 'cancelled') {
+    return GRAPH_STAGES.PAUSED;
+  }
+
+  if (live && (kind === 'planning' || kind === 'revise')) {
+    return GRAPH_STAGES.PLANNING;
+  }
+  if (live && kind === 'implement') {
+    return GRAPH_STAGES.CODING;
+  }
+  if (value.includes('Testing')) return GRAPH_STAGES.REVIEWING;
+  if (value.includes('WorkInProgress')) return GRAPH_STAGES.CODING;
+  if (value.includes('PlanReview')) return GRAPH_STAGES.PLAN_REVIEW;
+  if (value.includes('Planning')) {
+    if (!live && (runStatus === 'finished' || runStatus === 'idle' || !runStatus)) {
+      return GRAPH_STAGES.PLAN_REVIEW;
+    }
+    return GRAPH_STAGES.PLANNING;
+  }
+  if (value.includes('Planned')) return GRAPH_STAGES.NOT_STARTED;
+
+  return GRAPH_STAGES.NOT_STARTED;
+}
+
+export function graphStageLabel(stageId) {
+  return GRAPH_STAGE_LABELS[stageId] || stageId;
+}
+
+export function isWaitingOnHuman(status, workflow, stageId) {
+  if (!stageId) stageId = graphStage(status, workflow);
+  if (isLiveRun(workflow)) return false;
+  if (stageId === GRAPH_STAGES.PLAN_REVIEW) return true;
+  if (stageId === GRAPH_STAGES.REVIEWING) return true;
+  return false;
+}
+
+export function truncateForProcessUi(text, max = 96) {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (!raw) return '';
+  if (raw.length <= max) return raw;
+  return raw.slice(0, max - 1) + '…';
 }
