@@ -30,6 +30,7 @@ import {
   setActiveRun,
   updateFeatureWorkflow,
 } from './state.js';
+import { ensureFeatureBranch } from './git.js';
 
 const liveRuns = new Map();
 
@@ -120,16 +121,37 @@ async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFini
   assertNoActiveRun(specRoot, feature.featureId);
 
   const existing = getFeatureWorkflow(specRoot, feature.featureId) || {};
+  const branchInfo = ensureFeatureBranch(cwd, feature.featureId);
   updateFeatureWorkflow(specRoot, feature.featureId, {
     backend: 'cursor-local',
     model: cursorModel(),
     agentId: existing.agentId || null,
     kind,
     runStatus: 'starting',
+    branch: branchInfo.branch,
     lastError: null,
     lastAssistantText: '',
     transcript: [],
   });
+  if (branchInfo.created) {
+    appendTranscript(specRoot, feature.featureId, {
+      kind: 'status',
+      title: 'Branch',
+      text: `Created and checked out ${branchInfo.branch}.`,
+    });
+  } else if (branchInfo.switched) {
+    appendTranscript(specRoot, feature.featureId, {
+      kind: 'status',
+      title: 'Branch',
+      text: `Checked out ${branchInfo.branch}.`,
+    });
+  } else if (branchInfo.warning) {
+    appendTranscript(specRoot, feature.featureId, {
+      kind: 'status',
+      title: 'Branch',
+      text: branchInfo.warning,
+    });
+  }
   appendTranscript(specRoot, feature.featureId, {
     kind: 'status',
     title: 'Starting',

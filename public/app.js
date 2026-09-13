@@ -560,6 +560,9 @@ function renderCard(feature, categoryTitle) {
       <span class="card-status">${escapeHtml(feature.status)}</span>
       <span class="card-assignee ${!(feature.assignee && feature.assignee !== '-') ? 'unassigned' : ''}">${escapeHtml(feature.assignee && feature.assignee !== '-' ? feature.assignee : 'Unassigned')}</span>
     </div>
+    ${feature.branch
+      ? `<div class="card-branch${feature.branchCurrent ? ' is-current' : ''}" title="${escapeHtml(feature.branchExists ? 'Git branch for this feature' : 'Expected branch (not created locally yet)')}">${escapeHtml(feature.branch)}${feature.branchCurrent ? ' · checked out' : ''}</div>`
+      : ''}
     ${chipHtml}
     <div class="card-actions">
       <button type="button" data-action="open">Open</button>
@@ -1033,12 +1036,29 @@ function syncNextGate(gate) {
   });
 }
 
+function renderWorkspaceBranch(payload) {
+  const git = payload.git || {};
+  const branch = git.branch || (payload.feature && payload.feature.branch) || '';
+  const branchEl = document.getElementById('workspaceBranch');
+  const currentEl = document.getElementById('workspaceBranchCurrent');
+  const copyBtn = document.getElementById('copyBranch');
+  const checkoutBtn = document.getElementById('checkoutBranch');
+  if (branchEl) branchEl.textContent = branch || '—';
+  if (currentEl) currentEl.hidden = !git.isCurrent;
+  if (copyBtn) copyBtn.disabled = !branch;
+  if (checkoutBtn) {
+    checkoutBtn.disabled = !branch || !!git.isCurrent;
+    checkoutBtn.textContent = git.isCurrent ? 'Checked out' : (git.exists ? 'Check out' : 'Create and check out');
+  }
+}
+
 function renderWorkspace(payload) {
   const feature = payload.feature;
   uiState.workspaceFeatureId = feature.featureId;
   document.getElementById('workspaceFeatureId').textContent = feature.featureId;
   document.getElementById('workspaceTitle').textContent = feature.title;
   document.getElementById('workspaceStatus').textContent = feature.status;
+  renderWorkspaceBranch(payload);
 
   const plan = payload.artifacts.plan;
   const tasks = payload.artifacts.tasks;
@@ -1276,6 +1296,28 @@ async function markFeatureComplete(featureId) {
   } finally {
     if (previousId && previousId !== id) uiState.workspaceFeatureId = previousId;
   }
+}
+
+async function copyFeatureBranch() {
+  const branch = document.getElementById('workspaceBranch');
+  const name = branch && branch.textContent ? branch.textContent.trim() : '';
+  if (!name || name === '—') return;
+  await navigator.clipboard.writeText(name);
+  toast(`Copied ${name}`);
+}
+
+async function checkoutFeatureBranch() {
+  const featureId = uiState.workspaceFeatureId;
+  const name = document.getElementById('workspaceBranch').textContent.trim();
+  if (!featureId || !name || name === '—') return;
+  const ok = window.confirm(
+    `Check out ${name} for ${featureId}? This switches the local git repo. It will not discard committed work, but it refuses if you have uncommitted changes.`
+  );
+  if (!ok) return;
+  const data = await postWorkflow('/checkout-branch', { confirmed: true }, 'Failed to check out branch');
+  renderWorkspace(data.workspace);
+  await load();
+  toast(data.created ? `Created and checked out ${data.branch}` : `Checked out ${data.branch}`);
 }
 
 async function postWorkflow(path, body, fallbackError) {
@@ -1861,6 +1903,12 @@ document.getElementById('saveTasks').addEventListener('click', () => {
 document.getElementById('editFeatureFromWorkspace').addEventListener('click', () => {
   const feature = findFeatureById(uiState.workspaceFeatureId);
   if (feature) openEditModal(feature);
+});
+document.getElementById('copyBranch').addEventListener('click', () => {
+  copyFeatureBranch().catch((err) => toast(err.message || 'Failed to copy branch', 'error'));
+});
+document.getElementById('checkoutBranch').addEventListener('click', () => {
+  checkoutFeatureBranch().catch((err) => toast(err.message || 'Failed to check out branch', 'error'));
 });
 document.querySelectorAll('.workspace-tab').forEach((button) => {
   button.addEventListener('click', () => setWorkspaceTab(button.dataset.tab));

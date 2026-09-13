@@ -38,6 +38,7 @@ import {
   startRevisionRun,
 } from './workflow/runner.js';
 import { getFeatureWorkflow, readWorkflowState, updateFeatureWorkflow } from './workflow/state.js';
+import { checkoutFeatureBranch, describeFeatureBranch } from './workflow/git.js';
 import {
   commitTrackingFileIfNeeded,
   createFeatureMergeRequest,
@@ -473,16 +474,26 @@ function saveRegistry(parsed, preamble, postamble) {
 
 function attachWorkflowSummaries(categories) {
   const specRoot = resolveSpecRoot(activeFeaturesPath);
+  const cwd = resolveGitRoot(activeFeaturesPath);
   const workflows = readWorkflowState(specRoot).features || {};
   return (categories || []).map((category) => ({
     ...category,
     features: (category.features || []).map((feature) => {
       const workflow = workflows[feature.featureId] || {};
+      const git = describeFeatureBranch({
+        cwd,
+        featureId: feature.featureId,
+        storedBranch: workflow.branch,
+      });
       return {
         ...feature,
         planApprovedAt: workflow.planApprovedAt || null,
         runStatus: workflow.runStatus || null,
         pipeline: pipelineStage(feature.status, workflow),
+        branch: git.branch,
+        branchCurrent: git.isCurrent,
+        branchExists: git.exists,
+        branchSource: git.source,
       };
     }),
   }));
@@ -511,6 +522,11 @@ function buildWorkspacePayload(feature) {
     feature,
     stage: pipelineStage(feature.status, workflow),
     workflow,
+    git: describeFeatureBranch({
+      cwd: resolveGitRoot(activeFeaturesPath),
+      featureId: feature.featureId,
+      storedBranch: workflow && workflow.branch,
+    }),
     specRoot: path.basename(specRoot),
     artifacts,
     ship: describeShip({
@@ -811,6 +827,11 @@ app.post('/api/features/:featureId/ship', (req, res) => {
     updateFeatureWorkflow(specRoot, found.feature.featureId, {
       stage: 'ready',
       mrUrl: created.url,
+      branch: describeFeatureBranch({
+        cwd,
+        featureId: found.feature.featureId,
+        storedBranch: created.branch || null,
+      }).branch,
       lastError: null,
     });
 
@@ -830,6 +851,44 @@ app.post('/api/features/:featureId/ship', (req, res) => {
     const status = /confirmed|incomplete|missing|feature branch|named git branch/i.test(err.message) ? 400
       : /gh |git push|not installed|auth/i.test(err.message) ? 400
       : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/features/:featureId/checkout-branch
+ * Requires { confirmed: true }. Checks out the feature branch locally.
+ */
+app.post('/api/features/:featureId/checkout-branch', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Checkout requires an explicit confirmed: true payload.' });
+    }
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const cwd = resolveGitRoot(activeFeaturesPath);
+    const workflow = getFeatureWorkflow(specRoot, found.feature.featureId) || {};
+    const git = describeFeatureBranch({
+      cwd,
+      featureId: found.feature.featureId,
+      storedBranch: workflow.branch,
+    });
+    const result = checkoutFeatureBranch(cwd, git.branch);
+    updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      branch: result.branch,
+      lastError: null,
+    });
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({
+      ok: true,
+      ...result,
+      workspace: buildWorkspacePayload(reloaded ? reloaded.feature : found.feature),
+    });
+  } catch (err) {
+    const status = /working tree has local changes|Branch name is required/i.test(err.message) ? 409 : 500;
     if (status === 500) console.error(err);
     res.status(status).json({ error: err.message });
   }

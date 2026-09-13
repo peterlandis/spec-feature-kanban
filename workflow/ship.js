@@ -292,7 +292,7 @@ export function createFeatureMergeRequest({ cwd, feature, completionContent, rev
     throw new Error('Edit the draft PR title and description before creating the merge request.');
   }
 
-  requireShipBranch(cwd);
+  const branch = requireShipBranch(cwd);
   const gh = describeGhAuth(cwd);
   if (!gh.ready) throw new Error(gh.error);
   const existing = existingPrUrl(cwd);
@@ -307,6 +307,7 @@ export function createFeatureMergeRequest({ cwd, feature, completionContent, rev
     : createDraftPr(cwd, prTitle, prBody);
   return {
     url,
+    branch,
     reused: Boolean(existing),
     committed: commit.committed,
     committedFiles: commit.files,
