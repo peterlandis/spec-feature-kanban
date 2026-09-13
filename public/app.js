@@ -40,6 +40,21 @@ let configState = {
 
 let workspacePollTimer = null;
 let processPollTimer = null;
+let graphHoveredFeatureId = null;
+let graphRenderCache = { edgeList: [], features: [], positions: new Map() };
+let graphResizeObserver = null;
+let graphViewport = { scale: 1, x: 0, y: 0 };
+let graphPointer = { active: false, lastX: 0, lastY: 0, didPan: false };
+
+const GRAPH_ZOOM_MIN = 0.35;
+const GRAPH_ZOOM_MAX = 5;
+
+const GRAPH_EDGE_LEGEND = [
+  { type: 'depends on', label: 'depends on', className: 'edge-depends-on' },
+  { type: 'blocked by', label: 'blocked by', className: 'edge-blocked-by' },
+  { type: 'same category', label: 'same category', className: 'edge-same-category', dashed: true },
+  { type: 'plan link', label: 'plan link', className: 'edge-plan-link' },
+];
 
 const PROCESS_MAIN_TRACK = [
   { id: 'not-started', label: 'Not started' },
@@ -559,15 +574,23 @@ function stopProcessPolling() {
   }
 }
 
-function syncProcessPolling(anyLive) {
-  const processView = document.getElementById('processView');
-  const shouldPoll = !!anyLive
-    && uiState.mainView === 'process'
-    && processView
-    && !processView.hidden;
+function isAlternateMainViewActive() {
+  if (uiState.mainView === 'process') {
+    const el = document.getElementById('processView');
+    return el && !el.hidden;
+  }
+  if (uiState.mainView === 'graph') {
+    const el = document.getElementById('graphView');
+    return el && !el.hidden;
+  }
+  return false;
+}
+
+function syncLiveViewPolling(anyLive) {
+  const shouldPoll = !!anyLive && isAlternateMainViewActive();
   if (shouldPoll && !processPollTimer) {
     processPollTimer = setInterval(() => {
-      if (uiState.mainView !== 'process') return;
+      if (!isAlternateMainViewActive()) return;
       load().catch(() => {});
     }, 1000);
   }
@@ -575,32 +598,44 @@ function syncProcessPolling(anyLive) {
 }
 
 function syncViewToggleButtons() {
-  const isProcess = uiState.mainView === 'process';
+  const view = uiState.mainView;
   const boardBtn = document.getElementById('viewBoard');
   const processBtn = document.getElementById('viewProcess');
+  const graphBtn = document.getElementById('viewGraph');
   if (boardBtn) {
-    boardBtn.classList.toggle('is-active', !isProcess);
-    boardBtn.setAttribute('aria-pressed', String(!isProcess));
+    boardBtn.classList.toggle('is-active', view === 'board');
+    boardBtn.setAttribute('aria-pressed', String(view === 'board'));
   }
   if (processBtn) {
-    processBtn.classList.toggle('is-active', isProcess);
-    processBtn.setAttribute('aria-pressed', String(isProcess));
+    processBtn.classList.toggle('is-active', view === 'process');
+    processBtn.setAttribute('aria-pressed', String(view === 'process'));
+  }
+  if (graphBtn) {
+    graphBtn.classList.toggle('is-active', view === 'graph');
+    graphBtn.setAttribute('aria-pressed', String(view === 'graph'));
   }
 }
 
 function setMainView(view) {
-  uiState.mainView = view === 'process' ? 'process' : 'board';
+  if (view === 'process' || view === 'graph') {
+    uiState.mainView = view;
+  } else {
+    uiState.mainView = 'board';
+  }
   renderMainView();
 }
 
 function renderMainView() {
-  const isProcess = uiState.mainView === 'process';
+  const view = uiState.mainView;
   const columns = document.getElementById('columns');
   const processView = document.getElementById('processView');
-  if (columns) columns.hidden = isProcess;
-  if (processView) processView.hidden = !isProcess;
+  const graphView = document.getElementById('graphView');
+  if (columns) columns.hidden = view !== 'board';
+  if (processView) processView.hidden = view !== 'process';
+  if (graphView) graphView.hidden = view !== 'graph';
   syncViewToggleButtons();
-  if (isProcess) renderProcess();
+  if (view === 'process') renderProcess();
+  else if (view === 'graph') renderFeatureGraph();
   else {
     stopProcessPolling();
     renderColumns();
@@ -736,7 +771,467 @@ function renderProcess() {
   blockedLinks.textContent = 'Blocked and Paused can be reached from active work (dashed paths in the plan topology).';
 
   graph.append(mainRow, revise, sideRow, blockedLinks);
-  syncProcessPolling(anyFeatureLive(features));
+  syncLiveViewPolling(anyFeatureLive(features));
+}
+
+function truncateGraphTitle(title, maxLen = 28) {
+  const t = String(title || '').trim();
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, maxLen - 1)}…`;
+}
+
+function shortCategoryLabel(categoryTitle) {
+  const raw = String(categoryTitle || 'Uncategorized').trim();
+  const withoutEmoji = raw.replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+  return withoutEmoji || raw;
+}
+
+function graphNodeTone(feature) {
+  const status = feature.status || '';
+  if (feature.runStatus === 'starting' || feature.runStatus === 'running') return 'live';
+  if (feature.waitingOnHuman) return 'waiting';
+  if (status.includes('Blocked')) return 'blocked';
+  if (status.includes('Complete')) return 'complete';
+  if ((feature.categoryTitle || '').toLowerCase().includes('agent')) return 'agent';
+  return 'core';
+}
+
+function graphNodeDegree(featureId, edges) {
+  let n = 0;
+  for (const edge of edges) {
+    if (edge.from === featureId || edge.to === featureId) n += 1;
+  }
+  return n;
+}
+
+function layoutFeatureNetwork(features, edges, width, height) {
+  const count = features.length;
+  const positions = new Map();
+  if (!count) return positions;
+  const cx = width / 2;
+  const cy = height / 2;
+  const nodes = features.map((feature, index) => {
+    const angle = ((2 * Math.PI * index) / count) - (Math.PI / 2);
+    const ring = 0.22 + (index % 4) * 0.11;
+    const radius = Math.min(width, height) * ring;
+    return {
+      id: feature.featureId,
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0,
+    };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const springs = edges.map((edge) => ({
+    a: byId.get(edge.from),
+    b: byId.get(edge.to),
+    k: edge.type === 'same category' ? 0.014 : edge.type === 'depends on' ? 0.05 : 0.028,
+    len: edge.type === 'same category' ? 88 : 150,
+  })).filter((spring) => spring.a && spring.b);
+
+  const iterations = 100;
+  for (let step = 0; step < iterations; step += 1) {
+    const cool = 0.9 - (step / iterations) * 0.35;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        let dx = nodes[j].x - nodes[i].x;
+        let dy = nodes[j].y - nodes[i].y;
+        const distSq = (dx * dx) + (dy * dy) || 1;
+        const dist = Math.sqrt(distSq);
+        const force = 2800 / distSq;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        nodes[i].vx -= fx;
+        nodes[i].vy -= fy;
+        nodes[j].vx += fx;
+        nodes[j].vy += fy;
+      }
+    }
+    for (const spring of springs) {
+      const dx = spring.b.x - spring.a.x;
+      const dy = spring.b.y - spring.a.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const pull = spring.k * (dist - spring.len);
+      const fx = (dx / dist) * pull;
+      const fy = (dy / dist) * pull;
+      spring.a.vx += fx;
+      spring.a.vy += fy;
+      spring.b.vx -= fx;
+      spring.b.vy -= fy;
+    }
+    const pad = 42;
+    for (const node of nodes) {
+      node.vx += (cx - node.x) * 0.01;
+      node.vy += (cy - node.y) * 0.01;
+      node.vx *= cool;
+      node.vy *= cool;
+      node.x += node.vx;
+      node.y += node.vy;
+      node.x = Math.min(width - pad, Math.max(pad, node.x));
+      node.y = Math.min(height - pad, Math.max(pad, node.y));
+    }
+  }
+  for (const node of nodes) {
+    positions.set(node.id, { x: node.x, y: node.y });
+  }
+  return positions;
+}
+
+function renderGraphLegend() {
+  const legend = document.getElementById('graphLegend');
+  if (!legend) return;
+  legend.innerHTML = GRAPH_EDGE_LEGEND.map((item) => `
+    <span class="graph-legend-item">
+      <span class="graph-legend-swatch ${item.dashed ? 'is-same-category' : ''} ${item.className}" aria-hidden="true"></span>
+      <span>${escapeHtml(item.label)}</span>
+    </span>
+  `).join('');
+}
+
+function setGraphFocus(featureId) {
+  graphHoveredFeatureId = featureId || null;
+  applyGraphFocusHighlight();
+}
+
+function applyGraphFocusHighlight() {
+  const root = document.getElementById('featureGraph');
+  if (!root) return;
+  const edges = graphRenderCache.edgeList || [];
+  const focusId = graphHoveredFeatureId;
+  const neighborIds = new Set();
+  if (focusId) {
+    for (const edge of edges) {
+      if (edge.from === focusId) neighborIds.add(edge.to);
+      if (edge.to === focusId) neighborIds.add(edge.from);
+    }
+  }
+  root.querySelectorAll('.feature-graph-node').forEach((node) => {
+    const id = node.dataset.featureId;
+    node.classList.remove('is-selected', 'is-dimmed', 'is-neighbor');
+    if (!focusId) return;
+    if (id === focusId) node.classList.add('is-selected');
+    else if (neighborIds.has(id)) node.classList.add('is-neighbor');
+    else node.classList.add('is-dimmed');
+  });
+  root.querySelectorAll('.feature-graph-link').forEach((link) => {
+    const touches = focusId && (link.dataset.from === focusId || link.dataset.to === focusId);
+    link.classList.toggle('is-dimmed', !!(focusId && !touches));
+    link.classList.toggle('is-hot', !!touches);
+  });
+  root.querySelectorAll('.feature-graph-edge-label').forEach((label) => {
+    const touches = focusId && (label.dataset.from === focusId || label.dataset.to === focusId);
+    label.classList.toggle('is-visible', !!touches);
+  });
+}
+
+function edgeTouchesFocus(edge, focusId) {
+  if (!focusId) return false;
+  return edge.from === focusId || edge.to === focusId;
+}
+
+function clampGraphScale(scale) {
+  return Math.min(GRAPH_ZOOM_MAX, Math.max(GRAPH_ZOOM_MIN, scale));
+}
+
+function resetGraphViewport() {
+  graphViewport = { scale: 1, x: 0, y: 0 };
+}
+
+function applyGraphViewport() {
+  const viewport = document.querySelector('.feature-graph-viewport');
+  if (!viewport) return;
+  viewport.setAttribute(
+    'transform',
+    `translate(${graphViewport.x} ${graphViewport.y}) scale(${graphViewport.scale})`,
+  );
+  const label = document.getElementById('graphZoomLabel');
+  if (label) label.textContent = `${Math.round(graphViewport.scale * 100)}%`;
+}
+
+function graphClientToSvg(svg, clientX, clientY) {
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: 0, y: 0 };
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+  const mapped = point.matrixTransform(ctm.inverse());
+  return { x: mapped.x, y: mapped.y };
+}
+
+function zoomGraphAt(svg, nextScale, origin) {
+  const scale = clampGraphScale(nextScale);
+  const worldX = (origin.x - graphViewport.x) / graphViewport.scale;
+  const worldY = (origin.y - graphViewport.y) / graphViewport.scale;
+  graphViewport.scale = scale;
+  graphViewport.x = origin.x - (worldX * scale);
+  graphViewport.y = origin.y - (worldY * scale);
+  applyGraphViewport();
+}
+
+function bindGraphViewport(svg) {
+  svg.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const origin = graphClientToSvg(svg, event.clientX, event.clientY);
+    const factor = event.deltaY > 0 ? 0.88 : 1.14;
+    zoomGraphAt(svg, graphViewport.scale * factor, origin);
+  }, { passive: false });
+
+  svg.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest && event.target.closest('.feature-graph-node')) return;
+    graphPointer = { active: true, lastX: event.clientX, lastY: event.clientY, didPan: false };
+    svg.classList.add('is-panning');
+    svg.setPointerCapture(event.pointerId);
+  });
+  svg.addEventListener('pointermove', (event) => {
+    if (!graphPointer.active) return;
+    const dx = event.clientX - graphPointer.lastX;
+    const dy = event.clientY - graphPointer.lastY;
+    if (Math.hypot(dx, dy) > 3) graphPointer.didPan = true;
+    graphPointer.lastX = event.clientX;
+    graphPointer.lastY = event.clientY;
+    const ctm = svg.getScreenCTM();
+    const unit = ctm ? Math.abs(ctm.a) || 1 : 1;
+    graphViewport.x += dx / unit;
+    graphViewport.y += dy / unit;
+    applyGraphViewport();
+  });
+  const endPan = (event) => {
+    if (!graphPointer.active) return;
+    graphPointer.active = false;
+    svg.classList.remove('is-panning');
+    if (svg.hasPointerCapture && svg.hasPointerCapture(event.pointerId)) {
+      svg.releasePointerCapture(event.pointerId);
+    }
+  };
+  svg.addEventListener('pointerup', endPan);
+  svg.addEventListener('pointercancel', endPan);
+}
+
+function bindGraphNode(group, feature) {
+  const activate = () => {
+    if (graphPointer.didPan) {
+      graphPointer.didPan = false;
+      return;
+    }
+    openWorkspace(feature.featureId).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+  };
+  group.addEventListener('click', activate);
+  group.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activate();
+    }
+  });
+  group.addEventListener('mouseenter', () => setGraphFocus(feature.featureId));
+  group.addEventListener('mouseleave', () => setGraphFocus(null));
+  group.addEventListener('focus', () => setGraphFocus(feature.featureId));
+  group.addEventListener('blur', () => setGraphFocus(null));
+}
+
+function drawFeatureNetwork(shell, { features, edges, positions, width, height, focusId }) {
+  const svgNs = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNs, 'svg');
+  svg.setAttribute('class', 'feature-graph-canvas');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('role', 'presentation');
+
+  const defs = document.createElementNS(svgNs, 'defs');
+  defs.innerHTML = `
+    <filter id="feature-graph-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="feature-graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L6,3 z" fill="#6e7c8f"/>
+    </marker>
+  `;
+  svg.appendChild(defs);
+
+  const viewport = document.createElementNS(svgNs, 'g');
+  viewport.setAttribute('class', 'feature-graph-viewport');
+
+  const edgeLayer = document.createElementNS(svgNs, 'g');
+  edgeLayer.setAttribute('class', 'feature-graph-links');
+  for (const edge of edges) {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) continue;
+    const cls = `edge-${edge.type.replace(/\s+/g, '-')}`;
+    const hot = edgeTouchesFocus(edge, focusId);
+    const dimmed = focusId && !hot;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const curve = Math.min(36, dist * 0.14);
+    const cx = ((from.x + to.x) / 2) + ((-dy / dist) * curve);
+    const cy = ((from.y + to.y) / 2) + ((dx / dist) * curve);
+    const path = document.createElementNS(svgNs, 'path');
+    path.setAttribute('d', `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`);
+    path.setAttribute('class', `feature-graph-link ${cls}${dimmed ? ' is-dimmed' : ''}${hot ? ' is-hot' : ''}`);
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    if (edge.directed !== false) path.setAttribute('marker-end', 'url(#feature-graph-arrow)');
+    edgeLayer.appendChild(path);
+
+    const label = document.createElementNS(svgNs, 'text');
+    label.setAttribute('class', `feature-graph-edge-label${hot ? ' is-visible' : ''}`);
+    label.setAttribute('x', String(cx));
+    label.setAttribute('y', String(cy - 6));
+    label.setAttribute('text-anchor', 'middle');
+    label.dataset.from = edge.from;
+    label.dataset.to = edge.to;
+    label.textContent = edge.type;
+    edgeLayer.appendChild(label);
+  }
+  viewport.appendChild(edgeLayer);
+
+  const nodeLayer = document.createElementNS(svgNs, 'g');
+  for (const feature of features) {
+    const pos = positions.get(feature.featureId);
+    if (!pos) continue;
+    const degree = graphNodeDegree(feature.featureId, edges);
+    const radius = Math.min(16, 6 + degree * 1.15);
+    const tone = graphNodeTone(feature);
+    const live = tone === 'live';
+    const waiting = tone === 'waiting';
+    const neighborIds = new Set();
+    if (focusId) {
+      for (const edge of edges) {
+        if (edge.from === focusId) neighborIds.add(edge.to);
+        if (edge.to === focusId) neighborIds.add(edge.from);
+      }
+    }
+    const group = document.createElementNS(svgNs, 'g');
+    group.setAttribute('class', `feature-graph-node is-${tone}`);
+    if (focusId === feature.featureId) group.classList.add('is-selected');
+    else if (focusId && neighborIds.has(feature.featureId)) group.classList.add('is-neighbor');
+    else if (focusId) group.classList.add('is-dimmed');
+    group.dataset.featureId = feature.featureId;
+    group.setAttribute('tabindex', '0');
+    group.setAttribute('role', 'button');
+    const sr = live ? 'Live agent. ' : (waiting ? 'Waiting on human. ' : '');
+    group.setAttribute(
+      'aria-label',
+      `${sr}${feature.featureId}: ${feature.title || feature.featureId}. ${shortCategoryLabel(feature.categoryTitle)}. ${feature.status || ''}`,
+    );
+    group.setAttribute('transform', `translate(${pos.x} ${pos.y})`);
+
+    const halo = document.createElementNS(svgNs, 'circle');
+    halo.setAttribute('class', 'feature-graph-halo');
+    halo.setAttribute('r', String(radius + 7));
+    group.appendChild(halo);
+
+    const circle = document.createElementNS(svgNs, 'circle');
+    circle.setAttribute('class', 'feature-graph-dot');
+    circle.setAttribute('r', String(radius));
+    group.appendChild(circle);
+
+    const idText = document.createElementNS(svgNs, 'text');
+    idText.setAttribute('class', 'feature-graph-id');
+    idText.setAttribute('y', String(-(radius + 10)));
+    idText.setAttribute('text-anchor', 'middle');
+    idText.textContent = feature.featureId;
+    group.appendChild(idText);
+
+    const titleText = document.createElementNS(svgNs, 'text');
+    titleText.setAttribute('class', 'feature-graph-caption');
+    titleText.setAttribute('y', String(radius + 14));
+    titleText.setAttribute('text-anchor', 'middle');
+    titleText.textContent = truncateGraphTitle(feature.title);
+    group.appendChild(titleText);
+
+    bindGraphNode(group, feature);
+    nodeLayer.appendChild(group);
+  }
+  viewport.appendChild(nodeLayer);
+  svg.appendChild(viewport);
+  shell.innerHTML = '';
+  shell.appendChild(svg);
+  bindGraphViewport(svg);
+  applyGraphViewport();
+}
+
+function renderGraphZoomControls(root) {
+  const existing = root.querySelector('.graph-zoom-controls');
+  if (existing) existing.remove();
+  const controls = document.createElement('div');
+  controls.className = 'graph-zoom-controls';
+  controls.setAttribute('role', 'group');
+  controls.setAttribute('aria-label', 'Graph zoom');
+  controls.innerHTML = `
+    <button type="button" class="graph-zoom-btn" data-graph-zoom="out" aria-label="Zoom out">−</button>
+    <span class="graph-zoom-label" id="graphZoomLabel">${Math.round(graphViewport.scale * 100)}%</span>
+    <button type="button" class="graph-zoom-btn" data-graph-zoom="in" aria-label="Zoom in">+</button>
+    <button type="button" class="graph-zoom-btn graph-zoom-reset" data-graph-zoom="reset">Reset</button>
+  `;
+  controls.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-graph-zoom]');
+    if (!button) return;
+    const svg = root.querySelector('.feature-graph-canvas');
+    if (!svg) return;
+    const action = button.dataset.graphZoom;
+    if (action === 'reset') {
+      resetGraphViewport();
+      applyGraphViewport();
+      return;
+    }
+    const box = svg.getBoundingClientRect();
+    const origin = graphClientToSvg(svg, box.left + (box.width / 2), box.top + (box.height / 2));
+    const factor = action === 'in' ? 1.2 : 0.83;
+    zoomGraphAt(svg, graphViewport.scale * factor, origin);
+  });
+  root.appendChild(controls);
+}
+
+function ensureGraphResizeObserver(root) {
+  if (graphResizeObserver || typeof ResizeObserver === 'undefined') return;
+  graphResizeObserver = new ResizeObserver(() => {
+    if (uiState.mainView !== 'graph') return;
+    renderFeatureGraph();
+  });
+  graphResizeObserver.observe(root);
+}
+
+function renderFeatureGraph() {
+  const root = document.getElementById('featureGraph');
+  if (!root) return;
+
+  renderGraphLegend();
+  const features = applySearch(getAllFeatures());
+  const visibleIds = new Set(features.map((f) => f.featureId));
+  const allEdges = (state.graph && state.graph.edges) || [];
+  const edges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
+  if (graphHoveredFeatureId && !visibleIds.has(graphHoveredFeatureId)) {
+    graphHoveredFeatureId = null;
+  }
+  const focusId = graphHoveredFeatureId;
+
+  const width = Math.max(720, root.clientWidth || 960);
+  const height = Math.max(520, root.clientHeight || 560);
+  const layoutKey = `${[...visibleIds].sort().join(',')}|${Math.round(width / 40)}x${Math.round(height / 40)}`;
+  let positions = graphRenderCache.positions;
+  if (graphRenderCache.layoutKey !== layoutKey) {
+    positions = layoutFeatureNetwork(features, edges, width, height);
+    graphRenderCache.layoutKey = layoutKey;
+    resetGraphViewport();
+  }
+  graphRenderCache.edgeList = edges;
+  graphRenderCache.features = features;
+  graphRenderCache.positions = positions;
+
+  root.innerHTML = '';
+  const shell = document.createElement('div');
+  shell.className = 'feature-graph-shell';
+  root.appendChild(shell);
+  drawFeatureNetwork(shell, { features, edges, positions, width, height, focusId });
+  renderGraphZoomControls(root);
+  ensureGraphResizeObserver(root);
+  syncLiveViewPolling(anyFeatureLive(features));
 }
 
 function pipelineChip(featureOrStatus, workflow) {
@@ -2029,6 +2524,7 @@ document.getElementById('addCategory')?.addEventListener('click', () => {
 document.getElementById('refresh').addEventListener('click', load);
 document.getElementById('viewBoard')?.addEventListener('click', () => setMainView('board'));
 document.getElementById('viewProcess')?.addEventListener('click', () => setMainView('process'));
+document.getElementById('viewGraph')?.addEventListener('click', () => setMainView('graph'));
 document.getElementById('openSettings').addEventListener('click', () => openSettings());
 document.getElementById('closeSettings').addEventListener('click', closeSettings);
 document.getElementById('openGithubSettingsFromShip').addEventListener('click', openGithubSettings);
