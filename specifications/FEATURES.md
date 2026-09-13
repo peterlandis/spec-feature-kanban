@@ -48,7 +48,7 @@ cycle.
 ### Agent Workflow
 | Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Notes |
 |------------|-------|-------------|-------|--------|----------|---------------|-------|
-| AGENT-001 | Local Cursor spec workflow | From the local Kanban, confirm Start planning, fire a Cursor agent to write plan/tasks, revise until approved, then implement, review artifacts, and optionally open an MR | v1 | 🧪 Testing | @peterlandis | [AGENT-001-LOCAL-CURSOR-WORKFLOW-PLAN.md](plans/AGENT-001-LOCAL-CURSOR-WORKFLOW-PLAN.md) | Tasks: [AGENT-001-IMPLEMENTATION-TASKS.md](tasks/AGENT-001-IMPLEMENTATION-TASKS.md). Adapter and Ship/MR wired. Leftover: verification, security review, completion summary. |
+| AGENT-001 | Local Cursor spec workflow | From the local Kanban, confirm Start planning, fire a Cursor agent to write plan/tasks, revise until approved, then implement, review artifacts, and optionally open an MR | v1 | ✅ Complete | @peterlandis | [AGENT-001-LOCAL-CURSOR-WORKFLOW-PLAN.md](plans/AGENT-001-LOCAL-CURSOR-WORKFLOW-PLAN.md) | Tasks: [AGENT-001-IMPLEMENTATION-TASKS.md](tasks/AGENT-001-IMPLEMENTATION-TASKS.md). Local Cursor adapter and Ship/MR on main. |
 | AGENT-002 | Hosted phone-reachable service | Host the control plane over HTTPS so any device can kick off remote/cloud agents against a connected git repo and get notified at human gates | Later | 📋 Planned | - | - | Depends on AGENT-001. Not v1. |
 
 
