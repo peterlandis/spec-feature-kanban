@@ -24,6 +24,7 @@ function runGit(cwd, args, { allowFail = false, trim = true } = {}) {
       cwd,
       encoding: 'utf8',
       timeout: 60000,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdout = trim ? raw.trim() : raw.replace(/\n$/, '');
     return { ok: true, stdout };
