@@ -123,6 +123,23 @@ body {
   background: var(--border);
 }
 
+.btn-gate {
+  background: var(--success);
+  color: #07140a;
+  border: 1px solid var(--success);
+  font-weight: 600;
+}
+
+.btn-gate:hover {
+  filter: brightness(1.08);
+}
+
+.btn-gate:disabled {
+  opacity: 0.55;
+  filter: none;
+  cursor: default;
+}
+
 .kanban {
   padding: 1rem;
   overflow-x: auto;
@@ -341,6 +358,18 @@ body {
 .card-actions button:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+.card-actions button.btn-gate {
+  background: var(--success);
+  border-color: var(--success);
+  color: #07140a;
+  font-weight: 600;
+}
+
+.card-actions button.btn-gate:hover {
+  color: #07140a;
+  filter: brightness(1.08);
 }
 
 .modal {
@@ -643,6 +672,13 @@ body {
 .pipeline-chip.chip-coding { color: #f0883e; border: 1px solid #f0883e; }
 .pipeline-chip.chip-testing { color: var(--success); border: 1px solid var(--success); }
 .pipeline-chip.chip-ready { color: var(--complete); border: 1px solid var(--complete); }
+.pipeline-chip.chip-complete { color: var(--complete); border: 1px solid var(--complete); }
+.pipeline-chip.is-gate {
+  background: rgba(63, 185, 80, 0.16);
+  color: var(--success);
+  border: 1px solid var(--success);
+  font-weight: 600;
+}
 
 .workspace {
   position: fixed;
@@ -702,6 +738,17 @@ body {
   margin-right: 0.5rem;
 }
 
+.workspace-status.is-gate {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.gate-hint {
+  font-size: 0.75rem;
+  color: var(--success);
+  margin-right: 0.35rem;
+}
+
 .workspace-tabs {
   display: flex;
   gap: 0.25rem;
@@ -723,6 +770,15 @@ body {
 .workspace-tab.is-active {
   color: var(--text);
   border-bottom-color: var(--accent);
+}
+
+.workspace-tab.is-gate {
+  color: var(--success);
+}
+
+.workspace-tab.is-gate.is-active {
+  color: var(--success);
+  border-bottom-color: var(--success);
 }
 
 .workspace-body {

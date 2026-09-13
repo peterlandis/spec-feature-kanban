@@ -10,6 +10,7 @@ export const STATUS_PLAN_REVIEW = '👀 PlanReview';
 export const STATUS_WIP = '🔨 WorkInProgress';
 export const STATUS_TESTING = '🧪 Testing';
 export const STATUS_READY_TO_MERGE = '🟢 ReadyToMerge';
+export const STATUS_COMPLETE = '✅ Complete';
 export const STATUS_BLOCKED = '🚫 Blocked';
 export const STATUS_PAUSED = '⏸️ Paused';
 
@@ -195,5 +196,6 @@ export function pipelineStage(status) {
   if (value.includes('WorkInProgress')) return 'coding';
   if (value.includes('Testing')) return 'review';
   if (value.includes('ReadyToMerge')) return 'ready';
+  if (value.includes('Complete')) return 'complete';
   return null;
 }

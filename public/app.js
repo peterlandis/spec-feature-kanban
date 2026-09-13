@@ -529,6 +529,7 @@ function pipelineChip(status) {
   if (value.includes('WorkInProgress')) return { label: 'coding', cls: 'chip-coding' };
   if (value.includes('Testing')) return { label: 'review', cls: 'chip-testing' };
   if (value.includes('ReadyToMerge')) return { label: 'ready', cls: 'chip-ready' };
+  if (value.includes('Complete')) return { label: 'complete', cls: 'chip-complete' };
   return null;
 }
 
@@ -556,6 +557,9 @@ function renderCard(feature, categoryTitle) {
     <div class="card-actions">
       <button type="button" data-action="open">Open</button>
       <button type="button" data-action="edit">Edit</button>
+      ${(feature.status || '').includes('ReadyToMerge')
+        ? '<button type="button" class="btn-gate" data-action="complete">Complete</button>'
+        : ''}
       <button type="button" data-action="delete">Delete</button>
     </div>
   `;
@@ -576,6 +580,14 @@ function renderCard(feature, categoryTitle) {
     e.stopPropagation();
     openEditModal(feature);
   });
+
+  const completeBtn = div.querySelector('[data-action="complete"]');
+  if (completeBtn) {
+    completeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      markFeatureComplete(feature.featureId).catch((err) => toast(err.message || 'Failed to mark complete', 'error'));
+    });
+  }
 
   div.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -856,23 +868,170 @@ function setArtifactView(kind, mode) {
   }
 }
 
+const GATE_BUTTON_IDS = [
+  'startPlanning',
+  'approvePlan',
+  'startImplement',
+  'createMergeRequest',
+  'markComplete',
+  'markCompleteFromShip',
+];
+
+function nextWorkspaceGate({ feature, workflow, ship, running, approved, configured, tasksExist }) {
+  const status = feature.status || '';
+  const runStatus = workflow.runStatus || '';
+
+  if (running) {
+    return { buttonIds: [], tab: null, hint: 'Agent is running. Wait or cancel.', chipLabel: null, waiting: true };
+  }
+  if (status.includes('Complete')) {
+    return { buttonIds: [], tab: null, hint: '', chipLabel: null, waiting: false };
+  }
+  if (status.includes('ReadyToMerge')) {
+    return {
+      buttonIds: ['markComplete', 'markCompleteFromShip'],
+      tab: 'ship',
+      hint: 'Next: mark complete after the PR is merged.',
+      chipLabel: 'ready',
+      waiting: true,
+    };
+  }
+  if (status.includes('Testing')) {
+    if (ship && ship.canCreate) {
+      return {
+        buttonIds: ['createMergeRequest'],
+        tab: 'ship',
+        hint: 'Next: create the draft PR.',
+        chipLabel: 'review',
+        waiting: true,
+      };
+    }
+    const missing = ship && Array.isArray(ship.missing) ? ship.missing : [];
+    return {
+      buttonIds: [],
+      tab: 'review',
+      hint: missing.length ? `Next: add ${missing.join(' and ')}.` : 'Next: review artifacts, then ship.',
+      chipLabel: 'review',
+      waiting: true,
+    };
+  }
+  if (status.includes('Blocked')) {
+    return {
+      buttonIds: approved ? ['startImplement'] : ['startPlanning'],
+      tab: 'plan',
+      hint: 'Blocked. Next: retry the last gate or edit the feature.',
+      chipLabel: null,
+      waiting: true,
+    };
+  }
+  if (approved && !status.includes('WorkInProgress')) {
+    return {
+      buttonIds: ['startImplement'],
+      tab: 'implementation',
+      hint: 'Next: start implementation.',
+      chipLabel: 'ready to implement',
+      waiting: true,
+    };
+  }
+  if (status.includes('PlanReview') || (tasksExist && !approved && runStatus === 'finished')) {
+    return {
+      buttonIds: ['approvePlan'],
+      tab: 'plan',
+      hint: 'Next: approve the plan.',
+      chipLabel: 'awaiting approval',
+      waiting: true,
+    };
+  }
+  if (status.includes('WorkInProgress')) {
+    return {
+      buttonIds: ['startImplement'],
+      tab: 'implementation',
+      hint: 'Next: continue implementation.',
+      chipLabel: 'coding',
+      waiting: true,
+    };
+  }
+  if (status.includes('Paused')) {
+    if (approved) {
+      return {
+        buttonIds: ['startImplement'],
+        tab: 'implementation',
+        hint: 'Paused. Next: start implementation.',
+        chipLabel: null,
+        waiting: true,
+      };
+    }
+    if (tasksExist) {
+      return {
+        buttonIds: ['approvePlan'],
+        tab: 'plan',
+        hint: 'Paused. Next: approve the plan.',
+        chipLabel: null,
+        waiting: true,
+      };
+    }
+  }
+  return {
+    buttonIds: ['startPlanning'],
+    tab: 'plan',
+    hint: configured ? 'Next: start planning.' : 'Next: save a Cursor key, then start planning.',
+    chipLabel: null,
+    waiting: true,
+  };
+}
+
+function syncNextGate(gate) {
+  GATE_BUTTON_IDS.forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.classList.remove('btn-primary', 'btn-gate');
+    button.classList.add('btn-secondary');
+    button.removeAttribute('aria-current');
+  });
+  (gate.buttonIds || []).forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button || button.disabled) return;
+    button.classList.remove('btn-secondary');
+    button.classList.add('btn-gate');
+    button.setAttribute('aria-current', 'step');
+  });
+
+  const statusEl = document.getElementById('workspaceStatus');
+  if (statusEl) statusEl.classList.toggle('is-gate', !!gate.waiting);
+
+  const chip = document.getElementById('workspaceChip');
+  const feature = findFeatureById(uiState.workspaceFeatureId);
+  const mapped = feature ? pipelineChip(feature.status) : null;
+  if (chip) {
+    const label = gate.chipLabel || (mapped && mapped.label);
+    if (label) {
+      chip.hidden = false;
+      chip.textContent = label;
+      chip.className = 'pipeline-chip';
+      if (mapped) chip.classList.add(mapped.cls);
+      if (gate.waiting) chip.classList.add('is-gate');
+    } else {
+      chip.hidden = true;
+    }
+  }
+
+  const hint = document.getElementById('workspaceGateHint');
+  if (hint) {
+    hint.hidden = !gate.hint;
+    hint.textContent = gate.hint || '';
+  }
+
+  document.querySelectorAll('.workspace-tab').forEach((tab) => {
+    tab.classList.toggle('is-gate', !!gate.tab && tab.dataset.tab === gate.tab);
+  });
+}
+
 function renderWorkspace(payload) {
   const feature = payload.feature;
   uiState.workspaceFeatureId = feature.featureId;
   document.getElementById('workspaceFeatureId').textContent = feature.featureId;
   document.getElementById('workspaceTitle').textContent = feature.title;
   document.getElementById('workspaceStatus').textContent = feature.status;
-  const chip = document.getElementById('workspaceChip');
-  const stage = payload.stage || (pipelineChip(feature.status) || {}).label;
-  if (stage) {
-    chip.hidden = false;
-    chip.textContent = stage;
-    chip.className = 'pipeline-chip';
-    const mapped = pipelineChip(feature.status);
-    if (mapped) chip.classList.add(mapped.cls);
-  } else {
-    chip.hidden = true;
-  }
 
   const plan = payload.artifacts.plan;
   const tasks = payload.artifacts.tasks;
@@ -905,6 +1064,7 @@ function renderWorkspace(payload) {
   document.getElementById('sendRevision').disabled = !configured || running || !tasks.exists;
   document.getElementById('startImplement').disabled = !configured || running || !approved;
   document.getElementById('cancelRun').disabled = !running;
+  syncMarkCompleteButtons(feature, running);
 
   const ship = payload.ship || {};
   const shipStatus = document.getElementById('shipStatus');
@@ -914,12 +1074,14 @@ function renderWorkspace(payload) {
   const shipMrLink = document.getElementById('shipMrLink');
   const createMr = document.getElementById('createMergeRequest');
   const copyMr = document.getElementById('copyMergeRequest');
-  if (ship.mrUrl) {
+  if ((feature.status || '').includes('Complete')) {
+    shipStatus.textContent = 'This feature is marked complete. The board does not merge; GitHub is the source of truth for the PR.';
+  } else if (ship.mrUrl) {
     shipStatus.textContent = ship.approved
-      ? 'Review approved. Draft merge request is on the feature row. This board does not merge.'
-      : 'A merge request URL is on the feature row. This board does not merge.';
+      ? 'Review approved. Draft merge request is on the feature row. After you merge on GitHub, mark the feature complete.'
+      : 'A merge request URL is on the feature row. After you merge on GitHub, mark the feature complete.';
   } else {
-    shipStatus.textContent = 'Approve the completion summary and security review by creating a draft PR. This commits current work (except local secrets), pushes the branch, and opens a draft merge request. It does not merge.';
+    shipStatus.textContent = 'Approve the completion summary and security review by creating a draft PR. This commits current work (except local secrets), pushes the branch, and opens a draft merge request. It does not merge. After you merge on GitHub, mark the feature complete.';
   }
   if (ship.missing && ship.missing.length) {
     shipMissing.hidden = false;
@@ -955,6 +1117,15 @@ function renderWorkspace(payload) {
   createMr.disabled = running || !ship.canCreate;
   fillShipDraft(payload.feature && payload.feature.featureId, ship);
   document.getElementById('resetShipDraft').disabled = !ship.draftBody && !ship.draftTitle;
+  syncNextGate(nextWorkspaceGate({
+    feature,
+    workflow,
+    ship,
+    running,
+    approved,
+    configured,
+    tasksExist: tasks.exists,
+  }));
 
   const hint = document.getElementById('cursorConfigHint');
   hint.textContent = configured
@@ -1054,6 +1225,50 @@ function syncWorkspacePolling(running) {
 function closeWorkspace() {
   stopWorkspacePolling();
   document.getElementById('workspace').hidden = true;
+}
+
+function isCompleteStatus(status) {
+  return (status || '').includes('Complete');
+}
+
+function syncMarkCompleteButtons(feature, running) {
+  const done = isCompleteStatus(feature.status);
+  const buttons = [
+    document.getElementById('markComplete'),
+    document.getElementById('markCompleteFromShip'),
+  ];
+  buttons.forEach((button) => {
+    if (!button) return;
+    button.hidden = false;
+    button.disabled = done || running;
+    button.textContent = done ? 'Completed' : 'Mark complete';
+  });
+}
+
+async function markFeatureComplete(featureId) {
+  const id = featureId || uiState.workspaceFeatureId;
+  if (!id) return;
+  const feature = findFeatureById(id);
+  if (feature && isCompleteStatus(feature.status)) {
+    toast('Already complete');
+    return;
+  }
+  const ok = window.confirm(
+    `Mark ${id} complete? This moves the card to Completed in FEATURES.md. It does not merge or close the pull request on GitHub.`
+  );
+  if (!ok) return;
+  const previousId = uiState.workspaceFeatureId;
+  uiState.workspaceFeatureId = id;
+  try {
+    const data = await postWorkflow('/complete', { confirmed: true }, 'Failed to mark complete');
+    if (previousId === id && !document.getElementById('workspace').hidden) {
+      renderWorkspace(data.workspace);
+    }
+    await load();
+    toast(`${id} marked complete`);
+  } finally {
+    if (previousId && previousId !== id) uiState.workspaceFeatureId = previousId;
+  }
 }
 
 async function postWorkflow(path, body, fallbackError) {
@@ -1613,6 +1828,12 @@ document.getElementById('startImplement').addEventListener('click', () => {
 });
 document.getElementById('cancelRun').addEventListener('click', () => {
   cancelRun().catch((err) => toast(err.message || 'Failed to cancel', 'error'));
+});
+document.getElementById('markComplete').addEventListener('click', () => {
+  markFeatureComplete().catch((err) => toast(err.message || 'Failed to mark complete', 'error'));
+});
+document.getElementById('markCompleteFromShip').addEventListener('click', () => {
+  markFeatureComplete().catch((err) => toast(err.message || 'Failed to mark complete', 'error'));
 });
 document.getElementById('createMergeRequest').addEventListener('click', () => {
   createMergeRequest().catch((err) => toast(err.message || 'Failed to create merge request', 'error'));

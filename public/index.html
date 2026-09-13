@@ -110,10 +110,12 @@
       <div class="workspace-toolbar">
         <span class="workspace-status" id="workspaceStatus"></span>
         <span class="pipeline-chip" id="workspaceChip" hidden></span>
-        <button type="button" class="btn btn-primary" id="startPlanning">Start planning</button>
+        <span class="gate-hint" id="workspaceGateHint" hidden></span>
+        <button type="button" class="btn btn-secondary" id="startPlanning">Start planning</button>
         <button type="button" class="btn btn-secondary" id="approvePlan">Approve plan</button>
         <button type="button" class="btn btn-secondary" id="startImplement">Start implementation</button>
         <button type="button" class="btn btn-secondary" id="cancelRun">Cancel run</button>
+        <button type="button" class="btn btn-secondary" id="markComplete">Mark complete</button>
         <button type="button" class="btn btn-secondary" id="editFeatureFromWorkspace">Edit feature</button>
       </div>
       <div class="agent-live" id="agentLive">
@@ -184,7 +186,7 @@
           </div>
         </section>
         <section class="workspace-pane" data-pane="ship">
-          <p class="workspace-placeholder" id="shipStatus">Review the generated PR title and description, edit them if needed, then create a draft merge request. This board does not merge.</p>
+          <p class="workspace-placeholder" id="shipStatus">Review the generated PR title and description, edit them if needed, then create a draft merge request. This board does not merge. After you merge on GitHub, mark the feature complete.</p>
           <p id="shipMissing" hidden></p>
           <p class="run-error" id="shipBlockers" hidden></p>
           <p id="shipGithubHint" hidden>
@@ -206,9 +208,10 @@
             <ul class="ship-files" id="shipFiles"></ul>
           </div>
           <div class="form-actions">
-            <button type="button" class="btn btn-primary" id="createMergeRequest">Create draft PR</button>
+            <button type="button" class="btn btn-secondary" id="createMergeRequest">Create draft PR</button>
             <button type="button" class="btn btn-secondary" id="resetShipDraft">Reset to generated</button>
             <button type="button" class="btn btn-secondary" id="copyMergeRequest" hidden>Copy link</button>
+            <button type="button" class="btn btn-secondary" id="markCompleteFromShip">Mark complete</button>
           </div>
         </section>
       </div>

@@ -21,6 +21,7 @@ import {
   resolveSpecRoot,
   scaffoldArtifacts,
   STATUS_BLOCKED,
+  STATUS_COMPLETE,
   STATUS_READY_TO_MERGE,
   toSpecRelativePath,
   writeText,
@@ -814,6 +815,38 @@ app.post('/api/features/:featureId/ship', (req, res) => {
       : 500;
     if (status === 500) console.error(err);
     res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/features/:featureId/complete
+ * Requires { confirmed: true }. Marks the feature Complete in FEATURES.md.
+ * Does not merge on GitHub.
+ */
+app.post('/api/features/:featureId/complete', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Mark complete requires an explicit confirmed: true payload.' });
+    }
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const updated = updateFeatureFields(found.feature.featureId, { status: STATUS_COMPLETE });
+    updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      stage: 'complete',
+      completedAt: new Date().toISOString(),
+      lastError: null,
+    });
+    const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
+    res.json({
+      ok: true,
+      workspace: buildWorkspacePayload(reloaded ? reloaded.feature : updated),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
