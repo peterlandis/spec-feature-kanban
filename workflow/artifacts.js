@@ -189,9 +189,11 @@ export function checkPlanApprovalBoxes(tasksContent) {
   return next;
 }
 
-export function pipelineStage(status) {
+export function pipelineStage(status, workflow) {
   const value = status || '';
+  const approved = !!(workflow && workflow.planApprovedAt);
   if (value.includes('Planning')) return 'planning';
+  if (value.includes('PlanReview') && approved) return 'ready to implement';
   if (value.includes('PlanReview')) return 'awaiting approval';
   if (value.includes('WorkInProgress')) return 'coding';
   if (value.includes('Testing')) return 'review';

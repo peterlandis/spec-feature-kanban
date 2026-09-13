@@ -522,9 +522,16 @@ function applySearch(features) {
   });
 }
 
-function pipelineChip(status) {
-  const value = status || '';
+function pipelineChip(featureOrStatus, workflow) {
+  const feature = featureOrStatus && typeof featureOrStatus === 'object'
+    ? featureOrStatus
+    : { status: featureOrStatus };
+  const value = feature.status || '';
+  const approved = !!(feature.planApprovedAt || (workflow && workflow.planApprovedAt));
   if (value.includes('Planning')) return { label: 'planning', cls: 'chip-planning' };
+  if (value.includes('PlanReview') && approved) {
+    return { label: 'ready to implement', cls: 'chip-ready', gate: true };
+  }
   if (value.includes('PlanReview')) return { label: 'awaiting approval', cls: 'chip-review' };
   if (value.includes('WorkInProgress')) return { label: 'coding', cls: 'chip-coding' };
   if (value.includes('Testing')) return { label: 'review', cls: 'chip-testing' };
@@ -539,9 +546,9 @@ function renderCard(feature, categoryTitle) {
   div.draggable = true;
   div.dataset.featureId = feature.featureId;
   div.dataset.category = feature.categoryTitle;
-  const chip = pipelineChip(feature.status);
+  const chip = pipelineChip(feature);
   const chipHtml = chip
-    ? `<span class="pipeline-chip ${chip.cls}">${escapeHtml(chip.label)}</span>`
+    ? `<span class="pipeline-chip ${chip.cls}${chip.gate ? ' is-gate' : ''}">${escapeHtml(chip.label)}</span>`
     : '';
   div.innerHTML = `
     <div class="card-header">
@@ -1001,7 +1008,7 @@ function syncNextGate(gate) {
 
   const chip = document.getElementById('workspaceChip');
   const feature = findFeatureById(uiState.workspaceFeatureId);
-  const mapped = feature ? pipelineChip(feature.status) : null;
+  const mapped = feature ? pipelineChip(feature) : null;
   if (chip) {
     const label = gate.chipLabel || (mapped && mapped.label);
     if (label) {
@@ -1335,6 +1342,7 @@ async function approvePlan() {
   }
   const data = await res.json();
   renderWorkspace(data.workspace);
+  await load();
   toast('Plan approved. Start implementation when you are ready.');
 }
 

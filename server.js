@@ -37,7 +37,7 @@ import {
   startPlanningRun,
   startRevisionRun,
 } from './workflow/runner.js';
-import { getFeatureWorkflow, updateFeatureWorkflow } from './workflow/state.js';
+import { getFeatureWorkflow, readWorkflowState, updateFeatureWorkflow } from './workflow/state.js';
 import {
   commitTrackingFileIfNeeded,
   createFeatureMergeRequest,
@@ -471,6 +471,23 @@ function saveRegistry(parsed, preamble, postamble) {
   writeFeaturesFile(serializeToMarkdown(parsed, preamble || '', postamble || ''));
 }
 
+function attachWorkflowSummaries(categories) {
+  const specRoot = resolveSpecRoot(activeFeaturesPath);
+  const workflows = readWorkflowState(specRoot).features || {};
+  return (categories || []).map((category) => ({
+    ...category,
+    features: (category.features || []).map((feature) => {
+      const workflow = workflows[feature.featureId] || {};
+      return {
+        ...feature,
+        planApprovedAt: workflow.planApprovedAt || null,
+        runStatus: workflow.runStatus || null,
+        pipeline: pipelineStage(feature.status, workflow),
+      };
+    }),
+  }));
+}
+
 function updateFeatureFields(featureId, patch) {
   const { preamble, postamble, parsed } = loadRegistry();
   const found = findFeatureInParsed(parsed, featureId);
@@ -492,7 +509,7 @@ function buildWorkspacePayload(feature) {
   };
   return {
     feature,
-    stage: pipelineStage(feature.status),
+    stage: pipelineStage(feature.status, workflow),
     workflow,
     specRoot: path.basename(specRoot),
     artifacts,
@@ -513,7 +530,7 @@ app.get('/api/features', (req, res) => {
     const { preamble, postamble } = extractPreambleAndPostamble(content);
     const parsed = parseFeaturesMd(content);
     res.json({
-      categories: parsed.categories,
+      categories: attachWorkflowSummaries(parsed.categories),
       preamble,
       postamble,
     });
