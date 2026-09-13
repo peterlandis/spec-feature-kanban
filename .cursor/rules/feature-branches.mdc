@@ -1,0 +1,44 @@
+---
+description: Never work on main. Track every change as a FEATURES.md row on feat/<id>.
+alwaysApply: true
+---
+
+# Feature branches and registry
+
+Do not create, implement, or commit feature work on `main`. `main` is merge-only.
+
+## Before any product or spec work
+
+1. Read `specifications/FEATURES.md`.
+2. If the work has no row, add one first (next `CORE-NNN` or `AGENT-NNN`). Status `📋 Planned`, then `🔨 WorkInProgress` when implementation starts.
+3. Create and switch to a branch from latest `origin/main`:
+
+```text
+CORE-012  →  feat/core-012
+CORE-014  →  feat/core-014
+AGENT-001 →  feat/agent-001
+```
+
+Pattern: `feat/<lowercase-feature-id>` (keep the zero padding).
+
+```bash
+git fetch origin
+git checkout main
+git pull
+git checkout -b feat/core-014
+```
+
+## While working
+
+- Keep the registry row in sync (status, assignee, plan/tasks links, notes).
+- One feature id per branch. Do not pile unrelated fixes onto `feat/core-014`.
+- Merge to `main` only through a reviewed PR (or an explicit human request to merge). After merge, mark the card `✅ Complete`.
+
+## Do not
+
+```text
+❌ commit on main
+❌ git checkout -b feat/fix / feat/agents / feat/mark-feature-complete
+❌ start coding with no FEATURES.md row
+❌ reuse an old feature branch for a new id
+```
