@@ -15,6 +15,7 @@ const LOCAL_ONLY_PREFIXES = [
   '.features-node/',
   'node_modules/',
   '.env',
+  '.env.',
 ];
 
 function runGit(cwd, args, { allowFail = false, trim = true } = {}) {

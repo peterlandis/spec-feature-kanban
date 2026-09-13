@@ -1,6 +1,12 @@
+# Local secrets and machine state — never commit
+.features-secrets.json
 .features-kanban.json
 .features-workflow.json
-.features-secrets.json
 .features-models.json
 .features-agent-store/
 .features-node/
+
+# Environment files that may hold keys
+.env
+.env.*
+!.env.example
