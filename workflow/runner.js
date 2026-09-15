@@ -15,10 +15,10 @@ import {
 } from './artifacts.js';
 import {
   cancelCursorRun,
-  cursorModel,
   describeCursorError,
   disposeAgent,
   isCursorConfigured,
+  resolveCursorModel,
   startCursorRun,
 } from './cursor-adapter.js';
 import { implementPrompt, planningPrompt, revisionPrompt } from './prompts.js';
@@ -116,15 +116,18 @@ export function assertNoActiveRun(specRoot, featureId) {
   }
 }
 
-async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFinishedStatus }) {
+async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, model, onFinishedStatus }) {
   requireCursorConfigured();
   assertNoActiveRun(specRoot, feature.featureId);
 
   const existing = getFeatureWorkflow(specRoot, feature.featureId) || {};
+  const preferred = String(model || existing.preferredModel || '').trim();
+  const resolvedModel = resolveCursorModel(preferred);
   const branchInfo = ensureFeatureBranch(cwd, feature.featureId);
   updateFeatureWorkflow(specRoot, feature.featureId, {
     backend: 'cursor-local',
-    model: cursorModel(),
+    preferredModel: preferred || null,
+    model: resolvedModel,
     agentId: existing.agentId || null,
     kind,
     runStatus: 'starting',
@@ -155,13 +158,14 @@ async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFini
   appendTranscript(specRoot, feature.featureId, {
     kind: 'status',
     title: 'Starting',
-    text: `Launching local Cursor agent for ${kind}…`,
+    text: `Launching local Cursor agent (${resolvedModel}) for ${kind}…`,
   });
   const started = await startCursorRun({
     agentId: existing.agentId || null,
     cwd,
     prompt,
     tools,
+    model: resolvedModel,
   });
   const workerNote = started.workerNode && started.workerNode.version
     ? ` Using ${started.workerNode.version} for the Cursor SDK worker.`
@@ -180,7 +184,7 @@ async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFini
   });
   updateFeatureWorkflow(specRoot, feature.featureId, {
     backend: 'cursor-local',
-    model: cursorModel(),
+    model: resolvedModel,
     agentId: started.agentId,
     runId: started.runId,
     kind,
@@ -257,7 +261,7 @@ async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFini
   }
 }
 
-export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFeatureStatus }) {
+export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFeatureStatus, model }) {
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = planningPrompt(feature, artifactRefs(specRoot, feature));
   updateFeatureStatus(STATUS_PLANNING);
@@ -268,6 +272,7 @@ export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFea
     kind: 'planning',
     prompt,
     tools: PLAN_TOOLS,
+    model,
     onFinishedStatus: STATUS_PLAN_REVIEW,
   }).then((outcome) => {
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_PLAN_REVIEW);
@@ -282,7 +287,7 @@ export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFea
   });
 }
 
-export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, updateFeatureStatus }) {
+export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, updateFeatureStatus, model }) {
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = revisionPrompt(feature, note);
   updateFeatureStatus(STATUS_PLANNING);
@@ -293,6 +298,7 @@ export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, upd
     kind: 'revise',
     prompt,
     tools: PLAN_TOOLS,
+    model,
     onFinishedStatus: STATUS_PLAN_REVIEW,
   }).then((outcome) => {
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_PLAN_REVIEW);
@@ -307,7 +313,7 @@ export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, upd
   });
 }
 
-export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFeatureStatus }) {
+export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFeatureStatus, model }) {
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = implementPrompt(feature, artifactRefs(specRoot, feature));
   updateFeatureStatus(STATUS_WIP);
@@ -318,6 +324,7 @@ export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFe
     kind: 'implement',
     prompt,
     tools: IMPLEMENT_TOOLS,
+    model,
     onFinishedStatus: STATUS_TESTING,
   }).then((outcome) => {
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_TESTING);

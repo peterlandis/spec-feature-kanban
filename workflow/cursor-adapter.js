@@ -42,6 +42,13 @@ export function cursorModel() {
   return modelId();
 }
 
+/** Resolve a per-run model override, falling back to the Settings default. */
+export function resolveCursorModel(requested) {
+  const raw = String(requested || '').trim();
+  if (!raw || raw === 'default' || raw === 'auto') return modelId();
+  return raw;
+}
+
 function crashMessage(code, signal) {
   if (code === 139 || signal === 'SIGSEGV') {
     return 'The Cursor agent process crashed while loading a native module. The board is still running — retry after the worker is on Node 22.';
@@ -49,9 +56,10 @@ function crashMessage(code, signal) {
   return `Cursor agent exited (${code ?? signal}).`;
 }
 
-export async function startCursorRun({ agentId, cwd, prompt, tools }) {
+export async function startCursorRun({ agentId, cwd, prompt, tools, model }) {
   const workerExecPath = await ensureWorkerNode();
   const workerInfo = describeWorkerNode(workerExecPath);
+  const resolvedModel = resolveCursorModel(model);
   return new Promise((resolve, reject) => {
     const child = fork(WORKER_PATH, [], {
       execPath: workerExecPath,
@@ -166,10 +174,10 @@ export async function startCursorRun({ agentId, cwd, prompt, tools }) {
       cwd,
       prompt,
       tools,
-      model: modelId(),
+      model: resolvedModel,
     });
     settled = true;
-    resolve({ ...handle, workerNode: workerInfo });
+    resolve({ ...handle, workerNode: workerInfo, model: resolvedModel });
   });
 }
 

@@ -801,10 +801,13 @@ app.post('/api/features/:featureId/start-planning', (req, res) => {
     const { paths, created } = scaffoldArtifacts(specRoot, found.feature);
     found.feature.planDocument = toSpecRelativePath(specRoot, paths.planPath);
     saveRegistry(parsed, preamble, postamble);
+    const existing = getFeatureWorkflow(specRoot, found.feature.featureId) || {};
+    const model = String((req.body && req.body.model) || existing.preferredModel || '').trim();
     startPlanningRun({
       specRoot,
       feature: found.feature,
       featuresAbsPath: activeFeaturesPath,
+      model,
       updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
     });
     const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
@@ -819,6 +822,24 @@ app.post('/api/features/:featureId/start-planning', (req, res) => {
       : 500;
     if (status === 500) console.error(err);
     res.status(status).json({ error: err.message });
+  }
+});
+
+/** PUT /api/features/:featureId/preferred-model - Remember Cursor model for this feature */
+app.put('/api/features/:featureId/preferred-model', (req, res) => {
+  try {
+    const { parsed } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const model = String((req.body && req.body.model) || '').trim();
+    updateFeatureWorkflow(specRoot, found.feature.featureId, {
+      preferredModel: model || null,
+    });
+    res.json({ ok: true, workspace: buildWorkspacePayload(found.feature) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -901,11 +922,14 @@ app.post('/api/features/:featureId/revise', (req, res) => {
     const specRoot = resolveSpecRoot(activeFeaturesPath);
     assertNoActiveRun(specRoot, found.feature.featureId);
     updateFeatureWorkflow(specRoot, found.feature.featureId, { planApprovedAt: null });
+    const existing = getFeatureWorkflow(specRoot, found.feature.featureId) || {};
+    const model = String((req.body && req.body.model) || existing.preferredModel || '').trim();
     startRevisionRun({
       specRoot,
       feature: found.feature,
       featuresAbsPath: activeFeaturesPath,
       note,
+      model,
       updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
     });
     const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
@@ -935,10 +959,12 @@ app.post('/api/features/:featureId/implement', (req, res) => {
       return res.status(400).json({ error: 'Approve the plan before starting implementation.' });
     }
     assertNoActiveRun(specRoot, found.feature.featureId);
+    const model = String((req.body && req.body.model) || workflow.preferredModel || '').trim();
     startImplementRun({
       specRoot,
       feature: found.feature,
       featuresAbsPath: activeFeaturesPath,
+      model,
       updateFeatureStatus: (status) => updateFeatureFields(found.feature.featureId, { status }),
     });
     const reloaded = findFeatureInParsed(loadRegistry().parsed, found.feature.featureId);
