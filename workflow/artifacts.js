@@ -34,7 +34,11 @@ export function resolveGitRoot(startPath) {
     if (parent === current) break;
     current = parent;
   }
-  return path.dirname(resolveSpecRoot(startPath));
+  return null;
+}
+
+export function isGitRepository(cwd) {
+  return Boolean(cwd && fs.existsSync(path.join(cwd, '.git')));
 }
 
 export function resolveSpecRoot(featuresAbsPath) {

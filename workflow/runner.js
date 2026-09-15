@@ -118,6 +118,9 @@ export function assertNoActiveRun(specRoot, featureId) {
 
 async function executeKind({ specRoot, feature, cwd, kind, prompt, tools, onFinishedStatus }) {
   requireCursorConfigured();
+  if (!cwd) {
+    throw new Error('This FEATURES.md path is not inside a git repository. Point the board at a git project (or initialize git) before starting an agent.');
+  }
   assertNoActiveRun(specRoot, feature.featureId);
 
   const existing = getFeatureWorkflow(specRoot, feature.featureId) || {};
