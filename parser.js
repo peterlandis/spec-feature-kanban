@@ -1,9 +1,35 @@
 /**
- * Parser for FEATURES.md - extracts categories and features from markdown tables.
+ * FEATURES.md parser — categories and feature tables.
+ * Standard columns (CORE-033):
+ * Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Depends | Notes
  */
 
 const STATUS_COMPLETE = '✅ Complete';
 const STATUS_WIP = '🔨 WorkInProgress';
+
+export const STANDARD_FEATURE_HEADERS = [
+  'Feature ID',
+  'Title',
+  'Description',
+  'Phase',
+  'Status',
+  'Assignee',
+  'Plan Document',
+  'Depends',
+  'Notes',
+];
+
+const FIELD_ALIASES = {
+  featureId: ['feature id', 'id', 'feature'],
+  title: ['title', 'name'],
+  description: ['description', 'desc', 'summary'],
+  phase: ['phase'],
+  status: ['status'],
+  assignee: ['assignee', 'owner'],
+  planDocument: ['plan document', 'plan', 'plan doc', 'document'],
+  depends: ['depends', 'depends on', 'dependencies', 'dependency', 'deps'],
+  notes: ['notes', 'note', 'comments'],
+};
 
 /**
  * Parse a markdown table row into cells (handles pipes and escaped content).
@@ -59,6 +85,60 @@ function stripBold(text) {
   return (text || '').replace(/\*\*/g, '').trim();
 }
 
+function normalizeHeaderKey(raw) {
+  return String(raw || '')
+    .replace(/\*\*/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_/]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Map header labels to field names. Supports legacy tables without Depends.
+ */
+export function mapHeaderIndexes(headerCells) {
+  const indexes = {};
+  const used = new Set();
+  const normalized = (headerCells || []).map((cell, index) => ({
+    index,
+    key: normalizeHeaderKey(cell),
+  }));
+
+  for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
+    const match = normalized.find((item) => !used.has(item.index) && aliases.includes(item.key));
+    if (match) {
+      indexes[field] = match.index;
+      used.add(match.index);
+    }
+  }
+
+  // Legacy positional fallback when headers are the classic 8-column layout.
+  if (indexes.featureId == null && headerCells && headerCells.length >= 5) {
+    indexes.featureId = 0;
+    indexes.title = 1;
+    indexes.description = 2;
+    indexes.phase = 3;
+    indexes.status = 4;
+    if (headerCells.length >= 6) indexes.assignee = 5;
+    if (headerCells.length >= 7) indexes.planDocument = 6;
+    if (headerCells.length >= 9) {
+      indexes.depends = 7;
+      indexes.notes = 8;
+    } else if (headerCells.length >= 8) {
+      indexes.notes = 7;
+    }
+  }
+
+  return indexes;
+}
+
+function cellAt(cells, indexes, field, fallback = '') {
+  const idx = indexes[field];
+  if (idx == null || idx < 0 || idx >= cells.length) return fallback;
+  return stripBold(cells[idx] || fallback);
+}
+
 /**
  * Parse FEATURES.md content into structured data.
  */
@@ -66,7 +146,7 @@ export function parseFeaturesMd(content) {
   const lines = content.split('\n');
   const categories = [];
   let currentCategory = null;
-  let tableColumns = null;
+  let tableIndexes = null;
   let inFeatureCategories = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -93,7 +173,7 @@ export function parseFeaturesMd(content) {
         rawStart: i,
       };
       categories.push(currentCategory);
-      tableColumns = null;
+      tableIndexes = null;
       continue;
     }
 
@@ -104,24 +184,25 @@ export function parseFeaturesMd(content) {
 
     if (!currentCategory) continue;
 
-    if (line.startsWith('| Feature ID |') || line.startsWith('| Feature ID |')) {
-      tableColumns = parseTableRow(line);
+    if (/^\|\s*Feature ID\s*\|/i.test(line) || /^\|\s*ID\s*\|/i.test(line)) {
+      tableIndexes = mapHeaderIndexes(parseTableRow(line));
       continue;
     }
 
     if (isTableSeparator(line)) continue;
 
-    if (tableColumns && line.startsWith('|') && line.includes('|')) {
+    if (tableIndexes && line.startsWith('|') && line.includes('|')) {
       const cells = parseTableRow(line);
-      if (cells.length >= 5) {
-        const featureId = stripBold(cells[0] || '');
-        const title = stripBold(cells[1] || '');
-        const description = stripBold(cells[2] || '');
-        const phase = stripBold(cells[3] || '-');
-        const status = normalizeStatus(cells[4] || '');
-        const assignee = stripBold(cells[5] || '-');
-        const planDocument = stripBold(cells[6] || '-');
-        const notes = stripBold(cells[7] || '');
+      if (cells.length >= 5 && tableIndexes.featureId != null) {
+        const featureId = cellAt(cells, tableIndexes, 'featureId');
+        const title = cellAt(cells, tableIndexes, 'title');
+        const description = cellAt(cells, tableIndexes, 'description');
+        const phase = cellAt(cells, tableIndexes, 'phase', '-');
+        const status = normalizeStatus(cellAt(cells, tableIndexes, 'status'));
+        const assignee = cellAt(cells, tableIndexes, 'assignee', '-');
+        const planDocument = cellAt(cells, tableIndexes, 'planDocument', '-');
+        const depends = cellAt(cells, tableIndexes, 'depends', '-');
+        const notes = cellAt(cells, tableIndexes, 'notes', '');
 
         if (featureId && title) {
           currentCategory.features.push({
@@ -132,6 +213,7 @@ export function parseFeaturesMd(content) {
             status,
             assignee,
             planDocument,
+            depends: depends || '-',
             notes,
             categoryTitle: currentCategory.title,
           });
@@ -159,11 +241,17 @@ export function parseFeaturesMd(content) {
   return { categories: Array.from(byTitle.values()) };
 }
 
+function escapeCell(value) {
+  return String(value == null ? '' : value).replace(/\|/g, '\\|');
+}
+
 /**
- * Serialize categories and features back to markdown.
+ * Serialize categories and features back to markdown (always includes Depends).
  */
 export function serializeToMarkdown(parsed, preamble, postamble) {
   const sections = [];
+  const header = `| ${STANDARD_FEATURE_HEADERS.join(' | ')} |`;
+  const separator = '|' + STANDARD_FEATURE_HEADERS.map(() => '-------').join('|') + '|';
 
   for (const cat of parsed.categories) {
     sections.push(`### ${cat.title}`);
@@ -172,8 +260,8 @@ export function serializeToMarkdown(parsed, preamble, postamble) {
       sections.push(cat.description);
       sections.push('');
     }
-    sections.push('| Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Notes |');
-    sections.push('|------------|-------|-------------|-------|--------|----------|---------------|-------|');
+    sections.push(header);
+    sections.push(separator);
     for (const f of cat.features) {
       const row = [
         f.featureId,
@@ -183,9 +271,10 @@ export function serializeToMarkdown(parsed, preamble, postamble) {
         f.status || '📋 Planned',
         f.assignee || '-',
         f.planDocument || '-',
+        f.depends && String(f.depends).trim() ? f.depends : '-',
         f.notes || '',
-      ].join(' | ');
-      sections.push('| ' + row + ' |');
+      ].map(escapeCell);
+      sections.push('| ' + row.join(' | ') + ' |');
     }
     sections.push('');
     sections.push('');
@@ -206,4 +295,9 @@ export function extractPreambleAndPostamble(content) {
   const preamble = content.slice(0, featureCategoriesIdx).trim();
   const postamble = '\n\n' + content.slice(howToUseIdx).trim();
   return { preamble, postamble };
+}
+
+export function contentHasDependsHeader(content) {
+  return /\|\s*Depends(?:\s+on)?\s*\|/i.test(String(content || ''))
+    || /\|\s*Dependencies\s*\|/i.test(String(content || ''));
 }
