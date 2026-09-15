@@ -755,6 +755,7 @@ async function initConfigUi() {
     renderCursorSettingsStatus();
     renderGithubSettingsStatus();
     renderXaiSettingsStatus();
+    if (typeof window.syncJarvis === 'function') window.syncJarvis();
     if (configState.cursorConfigured) {
       refreshCursorModels({ silent: true }).catch(() => {});
     }
@@ -1377,6 +1378,9 @@ function drawFeatureNetwork(shell, { features, edges, positions, width, height, 
   const svg = document.createElementNS(svgNs, 'svg');
   svg.setAttribute('class', 'feature-graph-canvas');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   svg.setAttribute('role', 'presentation');
 
   const defs = document.createElementNS(svgNs, 'defs');
@@ -1553,8 +1557,8 @@ function renderFeatureGraph() {
   }
   const focusId = graphHoveredFeatureId;
 
-  const width = Math.max(720, root.clientWidth || 960);
-  const height = Math.max(520, root.clientHeight || 560);
+  const width = Math.max(320, root.clientWidth || 960);
+  const height = Math.max(280, root.clientHeight || 560);
   const layoutKey = `${[...visibleIds].sort().join(',')}|${Math.round(width / 40)}x${Math.round(height / 40)}`;
   let positions = graphRenderCache.positions;
   if (graphRenderCache.layoutKey !== layoutKey) {
@@ -2108,8 +2112,8 @@ function startGraph3dLoop() {
 
 function syncGraph3dCanvasSize(root, canvas) {
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(720, root.clientWidth || 960);
-  const height = Math.max(520, root.clientHeight || 560);
+  const width = Math.max(320, root.clientWidth || 960);
+  const height = Math.max(280, root.clientHeight || 560);
   const nextW = Math.round(width * dpr);
   const nextH = Math.round(height * dpr);
   if (canvas.width !== nextW || canvas.height !== nextH) {
