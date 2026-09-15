@@ -32,6 +32,16 @@
   </header>
 
   <main class="kanban">
+    <section class="board-focus" id="boardFocusStrip" hidden aria-label="Suggested focus">
+      <div class="board-focus-head">
+        <div>
+          <p class="board-focus-kicker">Suggested focus</p>
+          <p class="board-focus-lead">Where to begin, ranked from dependencies and human gates.</p>
+        </div>
+        <button type="button" class="btn btn-secondary" id="refreshBoardFocus" title="Refresh suggestions">Refresh</button>
+      </div>
+      <div class="board-focus-list" id="boardFocusList"></div>
+    </section>
     <div class="columns" id="columns"></div>
     <div class="process-view" id="processView" hidden aria-live="polite">
       <p class="process-lead">Spec-driven lifecycle across all tracked features. Click a feature to open its workspace. This view never starts agents.</p>

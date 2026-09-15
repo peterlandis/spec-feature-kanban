@@ -3,6 +3,8 @@
  * Chat never starts coding agents.
  */
 
+import { rankFocusCandidates } from './focus-suggestions.js';
+
 const FEATURE_ID_RE = /\b((?:CORE|AGENT)-\d{3})\b/gi;
 
 export function nextGateHint(feature) {
@@ -127,15 +129,21 @@ function listWhere(context, predicate, emptyText) {
 }
 
 function nextWorkAnswer(context) {
-  const waiting = (context.nodes || []).filter((node) => node.waitingOnHuman && node.nextGate);
-  const ready = waiting.length ? waiting : (context.nodes || []).filter((node) => node.nextGate && !String(node.status).includes('Complete'));
-  if (!ready.length) {
-    return { reply: 'Nothing in the snapshot is waiting on a human right now.', mentionIds: [] };
+  const picks = rankFocusCandidates(context.nodes || [], context.edges || [], { limit: 3 });
+  if (!picks.length) {
+    return { reply: 'Nothing in the snapshot looks like a good starting point right now.', mentionIds: [] };
   }
-  const pick = ready[0];
+  const top = picks[0];
+  const title = top.title ? ` (${top.title})` : '';
+  const gate = top.nextGate ? ` ${top.nextGate}` : '';
+  let reply = `I'd start with ${top.featureId}${title}. It is ${plainStatus(top.status)} — ${top.why}.${gate}`;
+  const rest = picks.slice(1);
+  if (rest.length) {
+    reply += ` Next: ${rest.map((item) => `${item.featureId}${item.title ? ` (${item.title})` : ''} (${item.why})`).join('; ')}.`;
+  }
   return {
-    reply: `I'd start with ${pick.id}${pick.title ? ` (${pick.title})` : ''}. It is ${plainStatus(pick.status)}.${pick.nextGate ? ` ${pick.nextGate}` : ''}`,
-    mentionIds: [pick.id],
+    reply,
+    mentionIds: picks.map((item) => item.featureId),
   };
 }
 
