@@ -32,19 +32,42 @@
   </header>
 
   <main class="kanban">
-    <section class="board-focus" id="boardFocusStrip" hidden aria-label="Suggested focus">
-      <div class="board-focus-head">
-        <div>
-          <p class="board-focus-kicker">Suggested focus</p>
-          <p class="board-focus-lead">Where to begin, ranked from dependencies and human gates.</p>
-        </div>
-        <button type="button" class="btn btn-secondary" id="refreshBoardFocus" title="Refresh suggestions">Refresh</button>
-      </div>
-      <div class="board-focus-list" id="boardFocusList"></div>
-    </section>
     <div class="columns" id="columns"></div>
     <div class="process-view" id="processView" hidden aria-live="polite">
-      <p class="process-lead">Spec-driven lifecycle across all tracked features. Click a feature to open its workspace. This view never starts agents.</p>
+      <p class="process-lead">Spec-driven lifecycle across tracked features. Use Suggested focus and Phase runner here; the Board stays for drag-and-drop. Click a feature to open its workspace.</p>
+      <section class="board-focus process-focus" id="boardFocusStrip" aria-label="Suggested focus">
+        <div class="board-focus-head">
+          <div>
+            <p class="board-focus-kicker">Suggested focus</p>
+            <p class="board-focus-lead">Where to begin, ranked from dependencies and human gates.</p>
+          </div>
+          <div class="board-focus-head-actions">
+            <button type="button" class="btn btn-secondary" id="buildPhaseFromFocus" title="Build an overnight phase from these suggestions">Build phase</button>
+            <button type="button" class="btn btn-secondary" id="refreshBoardFocus" title="Refresh suggestions">Refresh</button>
+          </div>
+        </div>
+        <div class="board-focus-list" id="boardFocusList"></div>
+      </section>
+      <section class="board-phase process-phase" id="boardPhasePanel" hidden aria-label="Phase runner">
+        <div class="board-phase-head">
+          <div>
+            <p class="board-focus-kicker">Phase runner</p>
+            <p class="board-focus-lead" id="boardPhaseLead">Build a phase from Suggested focus, then run it overnight.</p>
+          </div>
+          <div class="board-focus-head-actions">
+            <label class="board-phase-mode">
+              <span class="visually-hidden">Phase mode</span>
+              <select id="boardPhaseMode" class="select">
+                <option value="plan">Plan only (morning review)</option>
+                <option value="plan-implement">Plan + implement (auto-approve plans)</option>
+              </select>
+            </label>
+            <button type="button" class="btn btn-primary" id="runBoardPhase">Run phase</button>
+            <button type="button" class="btn btn-secondary" id="cancelBoardPhase" hidden>Cancel</button>
+          </div>
+        </div>
+        <div class="board-phase-list" id="boardPhaseList"></div>
+      </section>
       <div class="process-graph" id="processGraph" role="region" aria-label="Workflow process graph"></div>
     </div>
     <div class="graph-view" id="graphView" hidden>

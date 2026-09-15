@@ -181,6 +181,118 @@ body {
   margin-bottom: 0.7rem;
 }
 
+.board-focus-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.board-phase {
+  flex: 0 0 auto;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(210, 153, 34, 0.28);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(210, 153, 34, 0.08), transparent 42%),
+    rgba(13, 17, 23, 0.72);
+}
+
+.board-phase[hidden] {
+  display: none !important;
+}
+
+.board-phase-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.7rem;
+}
+
+.board-phase-mode .select {
+  min-width: 14rem;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.board-phase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.board-phase-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(110, 118, 129, 0.35);
+  background: rgba(22, 27, 34, 0.9);
+}
+
+.board-phase-item.is-running {
+  border-color: rgba(88, 166, 255, 0.55);
+}
+
+.board-phase-item.is-done {
+  border-color: rgba(63, 185, 80, 0.45);
+}
+
+.board-phase-item.is-failed {
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
+.board-phase-badge {
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #d2a029;
+  font-weight: 650;
+  padding-top: 0.15rem;
+}
+
+.board-phase-item.is-running .board-phase-badge { color: #79b8ff; }
+.board-phase-item.is-done .board-phase-badge { color: #3fb950; }
+.board-phase-item.is-failed .board-phase-badge { color: #f85149; }
+
+.board-phase-id {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #79b8ff;
+}
+
+.board-phase-title {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  color: #e6edf3;
+}
+
+.board-phase-meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.board-phase-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.board-phase-actions .btn {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+.board-phase-empty {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 .board-focus-kicker {
   margin: 0;
   font-size: 0.68rem;
@@ -1282,6 +1394,11 @@ body {
   color: var(--text-muted);
   font-size: 0.82rem;
   max-width: 52rem;
+}
+
+.process-view .process-focus,
+.process-view .process-phase {
+  margin-bottom: 0.85rem;
 }
 
 .process-graph {
