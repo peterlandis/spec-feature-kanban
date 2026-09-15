@@ -73,6 +73,8 @@ let graph3d = {
   edges: [],
   features: [],
   pointer: { active: false, lastX: 0, lastY: 0, didDrag: false },
+  rosterKey: '',
+  rosterUpdatedAt: 0,
 };
 
 const GRAPH_ZOOM_MIN = 0.35;
@@ -1709,12 +1711,27 @@ function rotateGraph3dPoint(point, yaw, pitch) {
   };
 }
 
+function graph3dContentCenter(width, height) {
+  const roster = document.getElementById('graph3dRoster');
+  const leftInset = (roster && !roster.hidden)
+    ? Math.min(width * 0.48, Math.max(0, roster.offsetWidth + 18))
+    : 0;
+  const usable = Math.max(160, width - leftInset);
+  // Midpoint of the open strip between In View and the Jarvis edge (canvas right).
+  return {
+    x: leftInset + (usable / 2),
+    y: height / 2,
+    leftInset,
+  };
+}
+
 function projectGraph3dPoint(point, width, height, distance) {
   const depth = point.z + distance;
   const scale = 520 / Math.max(80, depth);
+  const center = graph3dContentCenter(width, height);
   return {
-    x: (width / 2) + (point.x * scale) + graph3d.panX,
-    y: (height / 2) + (point.y * scale) + graph3d.panY,
+    x: center.x + (point.x * scale) + graph3d.panX,
+    y: center.y + (point.y * scale) + graph3d.panY,
     scale,
     depth,
   };
@@ -1813,11 +1830,12 @@ function graph3dLabelPlan(projected, focusId, neighborIds) {
 function zoomGraph3dAt(origin, nextScale, width, height) {
   const oldScale = graph3dViewScale() || 1;
   const scale = clampGraphScale(nextScale);
-  const worldX = (origin.x - (width / 2) - graph3d.panX) / oldScale;
-  const worldY = (origin.y - (height / 2) - graph3d.panY) / oldScale;
+  const center = graph3dContentCenter(width, height);
+  const worldX = (origin.x - center.x - graph3d.panX) / oldScale;
+  const worldY = (origin.y - center.y - graph3d.panY) / oldScale;
   graph3d.distance = GRAPH3D_DISTANCE_DEFAULT / scale;
-  graph3d.panX = origin.x - (width / 2) - (worldX * scale);
-  graph3d.panY = origin.y - (height / 2) - (worldY * scale);
+  graph3d.panX = origin.x - center.x - (worldX * scale);
+  graph3d.panY = origin.y - center.y - (worldY * scale);
   applyGraph3dZoomLabel();
 }
 
@@ -1913,6 +1931,157 @@ function updateGraph3dInspect() {
   `;
 }
 
+function graph3dFeatureBlurb(feature, maxLen = 72) {
+  const description = String((feature && feature.description) || '').trim();
+  if (!description) return '';
+  return description.length > maxLen ? `${description.slice(0, maxLen - 1)}…` : description;
+}
+
+function graph3dInViewItems(projected, width, height) {
+  const pad = 12;
+  const { leftInset } = graph3dContentCenter(width, height);
+  const minX = Math.max(pad, leftInset + 8);
+  return projected
+    .filter((item) => {
+      const { x, y, scale } = item.proj;
+      if (scale < 0.38) return false;
+      return x >= minX && x <= (width - pad) && y >= pad && y <= (height - pad);
+    })
+    .sort((a, b) => a.proj.depth - b.proj.depth);
+}
+
+function syncGraph3dRosterActive() {
+  const list = document.getElementById('graph3dRosterList');
+  if (!list) return;
+  const focusId = graph3d.grabbedId || graph3d.hoverId;
+  list.querySelectorAll('[data-graph3d-roster-id]').forEach((button) => {
+    const id = button.getAttribute('data-graph3d-roster-id');
+    button.classList.toggle('is-active', Boolean(focusId && id === focusId));
+  });
+}
+
+function setGraph3dRosterHover(id) {
+  const next = id || null;
+  if (graph3d.hoverId === next) return;
+  graph3d.hoverId = next;
+  syncGraph3dRosterActive();
+}
+
+function ensureGraph3dRoster(root) {
+  let roster = root.querySelector('#graph3dRoster');
+  if (!roster) {
+    roster = document.createElement('aside');
+    roster.id = 'graph3dRoster';
+    roster.className = 'graph-3d-roster';
+    roster.setAttribute('aria-label', 'Features currently in the 3D viewport');
+    roster.innerHTML = `
+      <div class="graph-3d-roster-head">
+        <p class="graph-3d-roster-kicker">In view</p>
+        <p class="graph-3d-roster-count" id="graph3dRosterCount">0</p>
+      </div>
+      <div class="graph-3d-roster-list" id="graph3dRosterList" role="list"></div>
+    `;
+    root.appendChild(roster);
+  }
+  if (roster.dataset.bound !== '1') {
+    roster.dataset.bound = '1';
+    roster.addEventListener('pointerover', (event) => {
+      const button = event.target.closest('[data-graph3d-roster-id]');
+      if (!button || !roster.contains(button)) return;
+      const id = button.getAttribute('data-graph3d-roster-id');
+      if (!id) return;
+      setGraph3dRosterHover(id);
+      if (!graph3d.grabbedId) {
+        graph3d.autoRotate = false;
+        updateGraph3dHud();
+      }
+    });
+    roster.addEventListener('pointerout', (event) => {
+      const next = event.relatedTarget;
+      if (next && roster.contains(next)) return;
+      if (graph3d.grabbedId) {
+        syncGraph3dRosterActive();
+        return;
+      }
+      setGraph3dRosterHover(null);
+      resumeGraph3dSpin();
+      updateGraph3dHud();
+    });
+    roster.addEventListener('focusin', (event) => {
+      const button = event.target.closest('[data-graph3d-roster-id]');
+      if (!button) return;
+      const id = button.getAttribute('data-graph3d-roster-id');
+      if (!id) return;
+      setGraph3dRosterHover(id);
+      pauseGraph3dSpin(id);
+      updateGraph3dHud();
+    });
+    roster.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-graph3d-roster-id]');
+      if (!button) return;
+      const id = button.getAttribute('data-graph3d-roster-id');
+      if (!id) return;
+      if (graph3d.grabbedId === id && !graph3d.autoRotate) {
+        openWorkspace(id);
+        return;
+      }
+      setGraph3dRosterHover(id);
+      pauseGraph3dSpin(id);
+      updateGraph3dHud();
+    });
+  }
+  return roster;
+}
+
+function updateGraph3dRoster(projected, width, height, force = false) {
+  const root = document.getElementById('featureGraph3d');
+  if (!root) return;
+  const roster = ensureGraph3dRoster(root);
+  const list = document.getElementById('graph3dRosterList');
+  const countEl = document.getElementById('graph3dRosterCount');
+  if (!list || !countEl) return;
+
+  roster.classList.toggle('is-pinned', Boolean(graph3d.grabbedId));
+  roster.hidden = false;
+
+  const inView = graph3dInViewItems(projected, width, height);
+  const reserved = graph3d.grabbedId ? 210 : 88;
+  const itemH = 64;
+  const maxItems = Math.max(2, Math.min(12, Math.floor((height - reserved) / itemH)));
+  const visible = inView.slice(0, maxItems);
+  const key = `${graph3d.grabbedId || ''}|${visible.map((item) => item.node.id).join(',')}|${maxItems}`;
+  const now = performance.now();
+  if (!force && key === graph3d.rosterKey && (now - graph3d.rosterUpdatedAt) < 220) return;
+  graph3d.rosterKey = key;
+  graph3d.rosterUpdatedAt = now;
+
+  const totalInView = inView.length;
+  countEl.textContent = totalInView > visible.length
+    ? `${visible.length} of ${totalInView}`
+    : String(visible.length);
+
+  if (!visible.length) {
+    list.innerHTML = '<p class="graph-3d-roster-empty">Nothing in frame — zoom out or wait for the spin.</p>';
+    return;
+  }
+
+  list.innerHTML = visible.map((item) => {
+    const feature = item.node.feature || {};
+    const title = feature.title || item.node.id;
+    const blurb = graph3dFeatureBlurb(feature, 78);
+    const status = String(feature.status || '').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+    const active = item.node.id === graph3d.grabbedId || item.node.id === graph3d.hoverId;
+    return `
+      <button type="button" class="graph-3d-roster-item${active ? ' is-active' : ''}" data-graph3d-roster-id="${escapeHtml(item.node.id)}" role="listitem">
+        <span class="graph-3d-roster-id">${escapeHtml(item.node.id)}</span>
+        <span class="graph-3d-roster-title">${escapeHtml(truncateGraphTitle(title, 40))}</span>
+        ${blurb ? `<span class="graph-3d-roster-blurb">${escapeHtml(blurb)}</span>` : ''}
+        ${status ? `<span class="graph-3d-roster-status">${escapeHtml(status)}</span>` : ''}
+      </button>
+    `;
+  }).join('');
+}
+
 function updateGraph3dHud() {
   const hud = document.getElementById('graph3dHud');
   const status = document.getElementById('graph3dStatus');
@@ -1927,10 +2096,16 @@ function updateGraph3dHud() {
   } else if (!spinning) {
     status.textContent = 'Paused — drag to orbit the cloud';
   } else {
-    status.textContent = 'Spinning — hover a feature to read its name, click to pin it';
+    status.textContent = 'Spinning — in-view features list on the left; click one to pin it';
   }
   resume.hidden = spinning;
   updateGraph3dInspect();
+  const canvas = document.getElementById('graph3dCanvas');
+  if (canvas) {
+    const width = canvas.clientWidth || 960;
+    const height = canvas.clientHeight || 560;
+    updateGraph3dRoster(graph3dProjectedNodes(width, height), width, height, true);
+  }
 }
 
 function drawGraph3dFrame(ts) {
@@ -2119,6 +2294,7 @@ function drawGraph3dFrame(ts) {
   }
   if (focusId && byId.get(focusId)) drawNode(byId.get(focusId), 'focus');
 
+  updateGraph3dRoster(projected, width, height);
   graph3d.raf = requestAnimationFrame(drawGraph3dFrame);
 }
 
@@ -2267,14 +2443,22 @@ function ensureGraph3dChrome(root) {
       root.appendChild(controls);
     }
     ensureGraph3dInspectCard(root);
+    ensureGraph3dRoster(root);
     bindGraph3dZoomControls(root);
     return;
   }
   root.innerHTML = `
     <canvas id="graph3dCanvas" class="feature-graph-3d-canvas" role="img" aria-label="Rotating three-dimensional feature graph"></canvas>
+    <aside class="graph-3d-roster" id="graph3dRoster" aria-label="Features currently in the 3D viewport">
+      <div class="graph-3d-roster-head">
+        <p class="graph-3d-roster-kicker">In view</p>
+        <p class="graph-3d-roster-count" id="graph3dRosterCount">0</p>
+      </div>
+      <div class="graph-3d-roster-list" id="graph3dRosterList" role="list"></div>
+    </aside>
     <div class="graph-3d-inspect" id="graph3dInspect" hidden></div>
     <div class="graph-3d-hud" id="graph3dHud">
-      <span id="graph3dStatus">Spinning — hover a feature to read its name, click to pin it</span>
+      <span id="graph3dStatus">Spinning — features in view appear on the left; click one to pin it</span>
       <button type="button" class="graph-3d-resume" id="graph3dResume" hidden>Resume spin</button>
     </div>
     <div class="graph-zoom-controls" role="group" aria-label="3D graph zoom">
@@ -2288,6 +2472,7 @@ function ensureGraph3dChrome(root) {
   const resume = document.getElementById('graph3dResume');
   bindGraph3dCanvas(root, canvas);
   bindGraph3dZoomControls(root);
+  ensureGraph3dRoster(root);
   resume.addEventListener('click', () => resumeGraph3dSpin());
 }
 
