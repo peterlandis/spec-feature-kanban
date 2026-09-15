@@ -39,12 +39,21 @@
     </div>
     <div class="graph-view" id="graphView" hidden>
       <div class="graph-toolbar">
-        <p class="graph-lead" id="graphLead">A network of every tracked feature. Scroll to zoom, drag to pan, hover a node to see its links, click to open its workspace. This view never starts agents.</p>
+        <p class="graph-lead" id="graphLead">Colored regions are FEATURES.md categories. Lines are depends-on / blocked-by / plan links. Scroll to zoom, drag to pan, hover a node for real links, click to open its workspace.</p>
         <div class="view-toggle graph-mode-toggle" role="group" aria-label="Graph projection">
           <button type="button" class="btn btn-secondary is-active" id="graphMode2d" aria-pressed="true">2D</button>
           <button type="button" class="btn btn-secondary" id="graphMode3d" aria-pressed="false">3D</button>
           <button type="button" class="btn btn-secondary" id="toggleJarvis" aria-pressed="false">Jarvis</button>
+          <button type="button" class="btn btn-secondary" id="suggestGraphDeps" title="Suggest Depends-on links from text and categories">Suggest links</button>
         </div>
+      </div>
+      <div class="graph-suggest" id="graphSuggestPanel" hidden>
+        <div class="graph-suggest-head">
+          <p class="graph-suggest-title">Suggested dependencies</p>
+          <button type="button" class="btn btn-secondary" id="closeGraphSuggest">Close</button>
+        </div>
+        <p class="graph-suggest-hint">Review proposed Depends-on links. Apply writes them into the feature Notes column.</p>
+        <div class="graph-suggest-list" id="graphSuggestList"></div>
       </div>
       <div class="graph-legend" id="graphLegend" aria-label="Edge type legend"></div>
       <div class="graph-stage">
