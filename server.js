@@ -60,6 +60,7 @@ import {
 import { briefJarvis } from './workflow/jarvis-brief.js';
 import { buildJarvisContext, nextGateHint } from './workflow/jarvis-context.js';
 import { suggestFocusFeatures } from './workflow/focus-suggestions.js';
+import { ensureSpecScaffold, summarizeScaffold } from './workflow/inflate-specifications.js';
 import { createPhase, getActivePhase, getPhase, listPhases } from './workflow/phases.js';
 import {
   cancelPhaseRunner,
@@ -70,8 +71,15 @@ import { listJarvisVoices, synthesizeJarvisSpeech } from './workflow/jarvis-voic
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = __dirname;
-const DEFAULT_FEATURES_RELATIVE_PATH = 'FEATURES.md';
+const DEFAULT_FEATURES_RELATIVE_PATH = path.join('specifications', 'FEATURES.md');
 const CONFIG_PATH = path.join(PROJECT_ROOT, '.features-kanban.json');
+let lastScaffoldSummary = null;
+
+function takeScaffoldSummary() {
+  const summary = lastScaffoldSummary;
+  lastScaffoldSummary = null;
+  return summary || { message: null, createdCount: 0 };
+}
 
 function getTemplateMarkdown() {
   return `# Feature Tracking (MVP)
@@ -161,7 +169,11 @@ function resolveNewFilePathWithinProjectRoot(fileNameOrPath) {
   // For creation, only allow project-relative paths to avoid writing outside the repo.
   if (path.isAbsolute(raw)) return null;
 
-  const withExt = path.extname(raw) ? raw : `${raw}.md`;
+  let withExt = path.extname(raw) ? raw : `${raw}.md`;
+  // First-time default: bare FEATURES.md lives under specifications/.
+  if (withExt === 'FEATURES.md' || withExt.toLowerCase() === 'features.md') {
+    withExt = path.join('specifications', 'FEATURES.md');
+  }
   const abs = path.normalize(path.join(PROJECT_ROOT, withExt));
   const rel = path.relative(PROJECT_ROOT, abs);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
@@ -179,6 +191,39 @@ function ensureTemplateFileExists(absPath) {
   if (fs.existsSync(absPath)) return;
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
   fs.writeFileSync(absPath, getTemplateMarkdown(), 'utf-8');
+}
+
+function projectNameForFeaturesPath(absPath) {
+  const featuresDir = path.dirname(absPath);
+  if (path.basename(featuresDir) === 'specifications') {
+    return path.basename(path.dirname(featuresDir)) || path.basename(PROJECT_ROOT);
+  }
+  return path.basename(featuresDir) || path.basename(PROJECT_ROOT);
+}
+
+function resolveFeaturesPathInProjectFolder(folderAbsPath) {
+  const root = path.normalize(folderAbsPath);
+  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    throw new Error('Selected path is not a folder');
+  }
+  const underSpecs = path.join(root, 'specifications', 'FEATURES.md');
+  const atRoot = path.join(root, 'FEATURES.md');
+  if (fs.existsSync(underSpecs)) return underSpecs;
+  if (fs.existsSync(atRoot)) return atRoot;
+  return underSpecs;
+}
+
+function inflateActiveSpecLayout(absPath, options = {}) {
+  const result = ensureSpecScaffold(absPath, {
+    projectName: options.projectName || projectNameForFeaturesPath(absPath),
+    tagline: options.tagline || 'Spec-driven feature tracking',
+    maintainer: options.maintainer || '-',
+    ...options,
+  });
+  // Fallback if scaffold assets are missing or FEATURES was skipped.
+  if (!fs.existsSync(absPath)) ensureTemplateFileExists(absPath);
+  lastScaffoldSummary = summarizeScaffold(result);
+  return result;
 }
 
 function findFeaturesFiles(rootDir, maxDepth = 6) {
@@ -234,7 +279,7 @@ function initActiveFeaturesPath() {
     const abs = resolveToAbsoluteFeaturesPath(envOverride);
     if (!abs) throw new Error('FEATURES_PATH is set but empty/invalid');
     if (!isMarkdownPath(abs)) throw new Error('FEATURES_PATH must point to a markdown file (e.g. .md)');
-    ensureTemplateFileExists(abs);
+    inflateActiveSpecLayout(abs);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
     if (!validated.ok) throw new Error(validated.error);
     setActiveFeaturesPath(abs, { persist: false });
@@ -243,7 +288,7 @@ function initActiveFeaturesPath() {
 
   const configured = resolveToAbsoluteFeaturesPath(runtimeConfig.featuresPath);
   if (configured && isMarkdownPath(configured)) {
-    ensureTemplateFileExists(configured);
+    inflateActiveSpecLayout(configured);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(configured, 'utf-8'));
     if (!validated.ok) throw new Error(validated.error);
     setActiveFeaturesPath(configured, { persist: false });
@@ -253,16 +298,16 @@ function initActiveFeaturesPath() {
   const candidates = findFeaturesFiles(PROJECT_ROOT);
   if (candidates.length > 0) {
     const abs = resolveToAbsoluteFeaturesPath(candidates[0]);
-    ensureTemplateFileExists(abs);
+    inflateActiveSpecLayout(abs);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
     if (!validated.ok) throw new Error(validated.error);
     setActiveFeaturesPath(abs, { persist: true });
     return;
   }
 
-  // First run: nothing selected and no FEATURES.md found -> create a template at the default location.
+  // First run: nothing selected and no FEATURES.md found -> create specifications/FEATURES.md.
   const abs = resolveToAbsoluteFeaturesPath(DEFAULT_FEATURES_RELATIVE_PATH);
-  ensureTemplateFileExists(abs);
+  inflateActiveSpecLayout(abs);
   const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
   if (!validated.ok) throw new Error(validated.error);
   setActiveFeaturesPath(abs, { persist: true });
@@ -284,11 +329,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /** GET /api/config - Return active FEATURES.md selection */
 app.get('/api/config', (req, res) => {
+  try {
+    if (activeFeaturesPath) {
+      const result = ensureSpecScaffold(activeFeaturesPath);
+      const summary = summarizeScaffold(result);
+      if (summary.createdCount) lastScaffoldSummary = summary;
+    }
+  } catch (err) {
+    console.error('[inflate]', err);
+  }
   res.json({
     featuresPath: toDisplayPath(activeFeaturesPath),
     usingEnvOverride: !!process.env.FEATURES_PATH,
     platform: process.platform,
     browseSupported: process.platform === 'darwin' && !process.env.FEATURES_PATH,
+    scaffold: takeScaffoldSummary(),
     ...getCursorSetupStatus(PROJECT_ROOT),
     ...getGithubSetupStatus(PROJECT_ROOT),
     ...getXaiSetupStatus(PROJECT_ROOT),
@@ -468,11 +523,15 @@ app.put('/api/config', (req, res) => {
     const abs = resolveToAbsoluteFeaturesPath(featuresPath);
     if (!abs) return res.status(400).json({ error: 'featuresPath is required' });
     if (!isMarkdownPath(abs)) return res.status(400).json({ error: 'featuresPath must point to a markdown file (e.g. .md)' });
-    ensureTemplateFileExists(abs);
+    inflateActiveSpecLayout(abs);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
     if (!validated.ok) return res.status(400).json({ error: validated.error });
     setActiveFeaturesPath(abs, { persist: true });
-    res.json({ ok: true, featuresPath: toDisplayPath(activeFeaturesPath) });
+    res.json({
+      ok: true,
+      featuresPath: toDisplayPath(activeFeaturesPath),
+      scaffold: takeScaffoldSummary(),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -488,16 +547,20 @@ app.post('/api/create-features-file', (req, res) => {
 
     const { fileName } = req.body || {};
     const abs = resolveNewFilePathWithinProjectRoot(fileName);
-    if (!abs) return res.status(400).json({ error: 'fileName must be a project-relative path (e.g. FEATURES_MVP.md)' });
+    if (!abs) return res.status(400).json({ error: 'fileName must be a project-relative path (e.g. specifications/FEATURES.md)' });
     if (!isMarkdownPath(abs)) return res.status(400).json({ error: 'fileName must be a markdown file (e.g. .md)' });
     if (fs.existsSync(abs)) return res.status(409).json({ error: 'File already exists' });
 
-    ensureTemplateFileExists(abs);
+    inflateActiveSpecLayout(abs);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
     if (!validated.ok) return res.status(500).json({ error: 'Template validation failed' });
 
     setActiveFeaturesPath(abs, { persist: true });
-    res.json({ ok: true, featuresPath: toDisplayPath(activeFeaturesPath) });
+    res.json({
+      ok: true,
+      featuresPath: toDisplayPath(activeFeaturesPath),
+      scaffold: takeScaffoldSummary(),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -529,11 +592,54 @@ app.post('/api/browse-features', (req, res) => {
     const abs = resolveToAbsoluteFeaturesPath(selectedPath);
     if (!abs) return res.status(400).json({ error: 'No file selected' });
     if (!isMarkdownPath(abs)) return res.status(400).json({ error: 'Selected file must be a markdown file (e.g. .md)' });
-    ensureTemplateFileExists(abs);
+    inflateActiveSpecLayout(abs);
     const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
     if (!validated.ok) return res.status(400).json({ error: validated.error });
     setActiveFeaturesPath(abs, { persist: true });
-    res.json({ ok: true, featuresPath: toDisplayPath(activeFeaturesPath) });
+    res.json({
+      ok: true,
+      featuresPath: toDisplayPath(activeFeaturesPath),
+      scaffold: takeScaffoldSummary(),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/open-project-folder - Pick a project folder (macOS); inflate specs + FEATURES.md if missing */
+app.post('/api/open-project-folder', (req, res) => {
+  try {
+    if (process.env.FEATURES_PATH) {
+      return res.status(409).json({ error: 'FEATURES_PATH env override is set; cannot change selection via UI.' });
+    }
+    if (process.platform !== 'darwin') {
+      return res.status(501).json({ error: 'Opening a project folder is currently supported only on macOS.' });
+    }
+
+    let selectedFolder;
+    try {
+      selectedFolder = execFileSync('osascript', [
+        '-e',
+        'POSIX path of (choose folder with prompt "Select project folder")',
+      ], { encoding: 'utf-8' }).trim();
+    } catch (err) {
+      return res.json({ cancelled: true });
+    }
+
+    const folderAbs = path.normalize((selectedFolder || '').replace(/\/+$/, '') || selectedFolder);
+    if (!folderAbs) return res.status(400).json({ error: 'No folder selected' });
+    const abs = resolveFeaturesPathInProjectFolder(folderAbs);
+    inflateActiveSpecLayout(abs, { projectName: path.basename(folderAbs) });
+    const validated = validateFeaturesMarkdownFormat(fs.readFileSync(abs, 'utf-8'));
+    if (!validated.ok) return res.status(500).json({ error: validated.error || 'Template validation failed' });
+    setActiveFeaturesPath(abs, { persist: true });
+    res.json({
+      ok: true,
+      featuresPath: toDisplayPath(activeFeaturesPath),
+      projectFolder: folderAbs,
+      scaffold: takeScaffoldSummary(),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
