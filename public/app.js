@@ -50,6 +50,8 @@ let configState = {
 let workspacePollTimer = null;
 let processPollTimer = null;
 let graphHoveredFeatureId = null;
+let graph2dRelatedAnchorId = null;
+let graph2dRelatedRosterKey = '';
 let graphRenderCache = { edgeList: [], features: [], positions: new Map() };
 let graphResizeObserver = null;
 let graphViewport = { scale: 1, x: 0, y: 0 };
@@ -74,6 +76,7 @@ let graph3d = {
   features: [],
   pointer: { active: false, lastX: 0, lastY: 0, didDrag: false },
   rosterKey: '',
+  rosterContentKey: '',
   rosterUpdatedAt: 0,
 };
 
@@ -1175,11 +1178,14 @@ function layoutFeatureNetwork(features, edges, width, height) {
   const count = features.length;
   const positions = new Map();
   if (!count) return positions;
-  const cx = width / 2;
+  // Leave room for the related-features roster on the left (CORE-029).
+  const leftInset = Math.min(220, Math.max(0, width * 0.22));
+  const cx = leftInset + ((width - leftInset) / 2);
   const cy = height / 2;
   const clusters = groupFeaturesByCategory(features);
   const catCount = Math.max(1, clusters.length);
-  const ring = Math.min(width, height) * (catCount <= 2 ? 0.18 : 0.30);
+  const usableW = Math.max(160, width - leftInset);
+  const ring = Math.min(usableW, height) * (catCount <= 2 ? 0.18 : 0.30);
   const categoryCenter = new Map();
   clusters.forEach((cluster, index) => {
     const angle = ((2 * Math.PI * index) / catCount) - (Math.PI / 2);
@@ -1244,6 +1250,7 @@ function layoutFeatureNetwork(features, edges, width, height) {
       spring.b.vy -= fy;
     }
     const pad = 42;
+    const minX = leftInset + pad;
     for (const node of nodes) {
       const home = categoryCenter.get(node.category) || { x: cx, y: cy };
       node.vx += (home.x - node.x) * 0.035;
@@ -1254,7 +1261,7 @@ function layoutFeatureNetwork(features, edges, width, height) {
       node.vy *= cool;
       node.x += node.vx;
       node.y += node.vy;
-      node.x = Math.min(width - pad, Math.max(pad, node.x));
+      node.x = Math.min(width - pad, Math.max(minX, node.x));
       node.y = Math.min(height - pad, Math.max(pad, node.y));
     }
   }
@@ -1390,9 +1397,16 @@ function renderGraphLegend(targetId = 'graphLegend', features = null) {
   `;
 }
 
-function setGraphFocus(featureId) {
+function setGraphFocus(featureId, options = {}) {
+  const fromRoster = Boolean(options && options.fromRoster);
   graphHoveredFeatureId = featureId || null;
+  if (!fromRoster) {
+    graph2dRelatedAnchorId = featureId || null;
+  } else if (!featureId) {
+    graph2dRelatedAnchorId = null;
+  }
   applyGraphFocusHighlight();
+  updateGraph2dRelatedRoster();
 }
 
 function applyGraphFocusHighlight() {
@@ -1400,30 +1414,232 @@ function applyGraphFocusHighlight() {
   if (!root) return;
   const edges = graphRenderCache.edgeList || [];
   const focusId = graphHoveredFeatureId;
+  const selectedId = graph2dRelatedAnchorId || focusId;
   const neighborIds = new Set();
-  if (focusId) {
+  if (selectedId) {
     for (const edge of edges) {
-      if (edge.from === focusId) neighborIds.add(edge.to);
-      if (edge.to === focusId) neighborIds.add(edge.from);
+      if (edge.from === selectedId) neighborIds.add(edge.to);
+      if (edge.to === selectedId) neighborIds.add(edge.from);
+    }
+    // Same-category peers dim less (neighbor) so the cluster stays readable with the roster.
+    for (const peer of graph2dSameCategoryPeers(selectedId)) {
+      neighborIds.add(peer.featureId);
     }
   }
   root.querySelectorAll('.feature-graph-node').forEach((node) => {
     const id = node.dataset.featureId;
     node.classList.remove('is-selected', 'is-dimmed', 'is-neighbor');
-    if (!focusId) return;
-    if (id === focusId) node.classList.add('is-selected');
-    else if (neighborIds.has(id)) node.classList.add('is-neighbor');
+    if (!selectedId) return;
+    if (id === selectedId) node.classList.add('is-selected');
+    else if (neighborIds.has(id) || id === focusId) node.classList.add('is-neighbor');
     else node.classList.add('is-dimmed');
   });
   root.querySelectorAll('.feature-graph-link').forEach((link) => {
-    const touches = focusId && (link.dataset.from === focusId || link.dataset.to === focusId);
-    link.classList.toggle('is-dimmed', !!(focusId && !touches));
+    const touches = selectedId && (link.dataset.from === selectedId || link.dataset.to === selectedId);
+    link.classList.toggle('is-dimmed', !!(selectedId && !touches));
     link.classList.toggle('is-hot', !!touches);
   });
   root.querySelectorAll('.feature-graph-edge-label').forEach((label) => {
-    const touches = focusId && (label.dataset.from === focusId || label.dataset.to === focusId);
+    const touches = selectedId && (label.dataset.from === selectedId || label.dataset.to === selectedId);
     label.classList.toggle('is-visible', !!touches);
   });
+}
+
+function graph2dFeatureById(featureId) {
+  const features = graphRenderCache.features || [];
+  return features.find((feature) => feature.featureId === featureId) || null;
+}
+
+function graph2dRelationsFor(focusId) {
+  const byNeighbor = new Map();
+  if (!focusId) return byNeighbor;
+  const edges = graphRenderCache.edgeList || [];
+  for (const edge of edges) {
+    if (!isLabeledGraphEdge(edge.type)) continue;
+    let other = null;
+    if (edge.from === focusId) other = edge.to;
+    else if (edge.to === focusId) other = edge.from;
+    if (!other) continue;
+    const list = byNeighbor.get(other) || [];
+    list.push(edge);
+    byNeighbor.set(other, list);
+  }
+  return byNeighbor;
+}
+
+function graph2dSameCategoryPeers(focusId) {
+  const features = graphRenderCache.features || [];
+  const focus = graph2dFeatureById(focusId);
+  if (!focus) return [];
+  const cat = (focus.categoryTitle || '').trim();
+  return features.filter((feature) => (
+    feature.featureId !== focusId
+    && ((feature.categoryTitle || '').trim() === cat)
+  ));
+}
+
+function graph2dRelatedItems(focusId) {
+  if (!focusId) return [];
+  const relations = graph2dRelationsFor(focusId);
+  const seen = new Set();
+  const items = [];
+  for (const [id, edges] of relations.entries()) {
+    seen.add(id);
+    const feature = graph2dFeatureById(id);
+    items.push({
+      id,
+      feature: feature || { featureId: id, title: id },
+      types: [...new Set(edges.map((edge) => edge.type))],
+      kind: 'link',
+    });
+  }
+  for (const peer of graph2dSameCategoryPeers(focusId)) {
+    if (seen.has(peer.featureId)) continue;
+    items.push({
+      id: peer.featureId,
+      feature: peer,
+      types: ['same category'],
+      kind: 'category',
+    });
+  }
+  return items;
+}
+
+function graph2dFeatureBlurb(feature, maxLen = 78) {
+  const description = String((feature && feature.description) || '').trim();
+  if (!description) return '';
+  return description.length > maxLen ? `${description.slice(0, maxLen - 1)}…` : description;
+}
+
+function ensureGraph2dRelatedRoster(root) {
+  let roster = root.querySelector('#graph2dRelatedRoster');
+  if (!roster) {
+    roster = document.createElement('aside');
+    roster.id = 'graph2dRelatedRoster';
+    roster.className = 'graph-3d-roster graph-2d-related-roster';
+    roster.setAttribute('aria-label', 'Features related to the highlighted node');
+    roster.hidden = true;
+    roster.innerHTML = `
+      <div class="graph-3d-roster-head">
+        <p class="graph-3d-roster-kicker">Related</p>
+        <p class="graph-3d-roster-count" id="graph2dRelatedCount">0</p>
+      </div>
+      <div class="graph-2d-related-focus" id="graph2dRelatedFocus"></div>
+      <div class="graph-3d-roster-list" id="graph2dRelatedList" role="list"></div>
+    `;
+    root.appendChild(roster);
+  }
+  if (roster.dataset.bound !== '1') {
+    roster.dataset.bound = '1';
+    roster.addEventListener('pointerover', (event) => {
+      const button = event.target.closest('[data-graph2d-related-id]');
+      if (!button || !roster.contains(button)) return;
+      const id = button.getAttribute('data-graph2d-related-id');
+      if (id) setGraphFocus(id, { fromRoster: true });
+    });
+    roster.addEventListener('pointerout', (event) => {
+      const next = event.relatedTarget;
+      if (next && roster.contains(next)) return;
+      if (next && next.closest && next.closest('.feature-graph-node')) return;
+      setGraphFocus(null);
+    });
+    roster.addEventListener('focusin', (event) => {
+      const button = event.target.closest('[data-graph2d-related-id]');
+      if (!button) return;
+      const id = button.getAttribute('data-graph2d-related-id');
+      if (id) setGraphFocus(id, { fromRoster: true });
+    });
+    roster.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-graph2d-related-id]');
+      if (!button) return;
+      const id = button.getAttribute('data-graph2d-related-id');
+      if (!id) return;
+      openWorkspace(id).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+    });
+  }
+  return roster;
+}
+
+function syncGraph2dRelatedRosterActive() {
+  const list = document.getElementById('graph2dRelatedList');
+  if (!list) return;
+  const focusId = graphHoveredFeatureId;
+  list.querySelectorAll('[data-graph2d-related-id]').forEach((button) => {
+    const id = button.getAttribute('data-graph2d-related-id');
+    button.classList.toggle('is-active', Boolean(focusId && id === focusId));
+  });
+}
+
+function updateGraph2dRelatedRoster() {
+  const root = document.getElementById('featureGraph');
+  if (!root || uiState.mainView !== 'graph' || uiState.graphMode !== '2d') return;
+  const roster = ensureGraph2dRelatedRoster(root);
+  const list = document.getElementById('graph2dRelatedList');
+  const countEl = document.getElementById('graph2dRelatedCount');
+  const focusEl = document.getElementById('graph2dRelatedFocus');
+  if (!list || !countEl || !focusEl) return;
+
+  const anchorId = graph2dRelatedAnchorId;
+  if (!anchorId) {
+    roster.hidden = true;
+    focusEl.innerHTML = '';
+    list.innerHTML = '';
+    countEl.textContent = '0';
+    graph2dRelatedRosterKey = '';
+    return;
+  }
+
+  const focusFeature = graph2dFeatureById(anchorId) || { featureId: anchorId, title: anchorId };
+  const related = graph2dRelatedItems(anchorId);
+  const height = Math.max(280, root.clientHeight || 560);
+  const itemH = 72;
+  const maxItems = Math.max(2, Math.min(10, Math.floor((height - 160) / itemH)));
+  const visible = related.slice(0, maxItems);
+  const key = `${anchorId}|${visible.map((item) => item.id).join(',')}|${maxItems}`;
+
+  roster.hidden = false;
+  if (key === graph2dRelatedRosterKey) {
+    syncGraph2dRelatedRosterActive();
+    return;
+  }
+  graph2dRelatedRosterKey = key;
+
+  countEl.textContent = related.length > visible.length
+    ? `${visible.length} of ${related.length}`
+    : String(related.length);
+
+  const focusBlurb = graph2dFeatureBlurb(focusFeature, 90);
+  const focusStatus = String(focusFeature.status || '').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+  focusEl.innerHTML = `
+    <div class="graph-2d-related-focus-card">
+      <span class="graph-3d-roster-id">${escapeHtml(anchorId)}</span>
+      <span class="graph-3d-roster-title">${escapeHtml(truncateGraphTitle(focusFeature.title || anchorId, 44))}</span>
+      ${focusBlurb ? `<span class="graph-3d-roster-blurb">${escapeHtml(focusBlurb)}</span>` : ''}
+      ${focusStatus ? `<span class="graph-3d-roster-status">${escapeHtml(focusStatus)}</span>` : ''}
+    </div>
+  `;
+
+  if (!visible.length) {
+    list.innerHTML = '<p class="graph-3d-roster-empty">No linked or same-category features yet.</p>';
+    return;
+  }
+
+  list.innerHTML = visible.map((item) => {
+    const title = item.feature.title || item.id;
+    const blurb = graph2dFeatureBlurb(item.feature, 78);
+    const status = String(item.feature.status || '').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+    const relation = item.types.join(', ');
+    const active = item.id === graphHoveredFeatureId;
+    return `
+      <button type="button" class="graph-3d-roster-item${active ? ' is-active' : ''}" data-graph2d-related-id="${escapeHtml(item.id)}" role="listitem">
+        <span class="graph-3d-roster-id">${escapeHtml(item.id)}</span>
+        <span class="graph-2d-related-type">${escapeHtml(relation)}</span>
+        <span class="graph-3d-roster-title">${escapeHtml(truncateGraphTitle(title, 40))}</span>
+        ${blurb ? `<span class="graph-3d-roster-blurb">${escapeHtml(blurb)}</span>` : ''}
+        ${status ? `<span class="graph-3d-roster-status">${escapeHtml(status)}</span>` : ''}
+      </button>
+    `;
+  }).join('');
 }
 
 function edgeTouchesFocus(edge, focusId) {
@@ -1526,9 +1742,17 @@ function bindGraphNode(group, feature) {
     }
   });
   group.addEventListener('mouseenter', () => setGraphFocus(feature.featureId));
-  group.addEventListener('mouseleave', () => setGraphFocus(null));
+  group.addEventListener('mouseleave', (event) => {
+    const next = event.relatedTarget;
+    if (next && next.closest && next.closest('#graph2dRelatedRoster')) return;
+    setGraphFocus(null);
+  });
   group.addEventListener('focus', () => setGraphFocus(feature.featureId));
-  group.addEventListener('blur', () => setGraphFocus(null));
+  group.addEventListener('blur', (event) => {
+    const next = event.relatedTarget;
+    if (next && next.closest && next.closest('#graph2dRelatedRoster')) return;
+    setGraphFocus(null);
+  });
 }
 
 function drawFeatureNetwork(shell, { features, edges, positions, width, height, focusId }) {
@@ -1794,6 +2018,8 @@ function renderFeatureGraph() {
   const layoutEdges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
   if (graphHoveredFeatureId && !visibleIds.has(graphHoveredFeatureId)) {
     graphHoveredFeatureId = null;
+    graph2dRelatedAnchorId = null;
+    graph2dRelatedRosterKey = '';
   }
   const focusId = graphHoveredFeatureId;
 
@@ -1816,6 +2042,7 @@ function renderFeatureGraph() {
   root.appendChild(shell);
   drawFeatureNetwork(shell, { features, edges, positions, width, height, focusId });
   renderGraphZoomControls(root);
+  updateGraph2dRelatedRoster();
   ensureGraphResizeObserver(root);
   syncLiveViewPolling(anyFeatureLive(features));
 }
@@ -2138,42 +2365,59 @@ function graph3dRelationsFor(focusId) {
   return byNeighbor;
 }
 
+function graph3dFeatureById(featureId) {
+  const node = graph3d.nodes.find((item) => item.id === featureId);
+  return node ? (node.feature || { featureId, title: featureId }) : null;
+}
+
+function graph3dSameCategoryPeers(focusId) {
+  const focus = graph3d.nodes.find((node) => node.id === focusId);
+  if (!focus) return [];
+  const cat = (focus.category || (focus.feature && focus.feature.categoryTitle) || '').trim();
+  if (!cat) return [];
+  return graph3d.nodes
+    .filter((node) => {
+      if (node.id === focusId) return false;
+      const other = (node.category || (node.feature && node.feature.categoryTitle) || '').trim();
+      return other === cat;
+    })
+    .map((node) => node.feature || { featureId: node.id, title: node.id });
+}
+
+function graph3dRelatedItems(focusId) {
+  if (!focusId) return [];
+  const relations = graph3dRelationsFor(focusId);
+  const seen = new Set();
+  const items = [];
+  for (const [id, edges] of relations.entries()) {
+    seen.add(id);
+    items.push({
+      id,
+      feature: graph3dFeatureById(id) || { featureId: id, title: id },
+      types: [...new Set(edges.map((edge) => edge.type))],
+      kind: 'link',
+    });
+  }
+  for (const peer of graph3dSameCategoryPeers(focusId)) {
+    const id = peer.featureId;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    items.push({
+      id,
+      feature: peer,
+      types: ['same category'],
+      kind: 'category',
+    });
+  }
+  return items;
+}
+
 function updateGraph3dInspect() {
   const card = document.getElementById('graph3dInspect');
   if (!card) return;
-  const held = graph3d.nodes.find((node) => node.id === graph3d.grabbedId);
-  if (!held) {
-    card.hidden = true;
-    card.innerHTML = '';
-    return;
-  }
-  const relations = graph3dRelationsFor(held.id);
-  const related = [...relations.entries()].map(([id, edges]) => {
-    const other = graph3d.nodes.find((node) => node.id === id);
-    const types = [...new Set(edges.map((edge) => edge.type))];
-    return {
-      id,
-      title: other ? (other.feature.title || id) : id,
-      types,
-    };
-  });
-  const relItems = related.length
-    ? related.map((item) => `
-        <li>
-          <span class="graph-3d-inspect-rel-id">${escapeHtml(item.id)}</span>
-          <span class="graph-3d-inspect-rel-type">${escapeHtml(item.types.join(', '))}</span>
-          <span class="graph-3d-inspect-rel-title">${escapeHtml(truncateGraphTitle(item.title, 36))}</span>
-        </li>
-      `).join('')
-    : '<li class="is-empty">No depends-on / blocked-by / plan links yet. Category grouping is the colored region around this node.</li>';
-  card.hidden = false;
-  card.innerHTML = `
-    <p class="graph-3d-inspect-kicker">Selected</p>
-    <p class="graph-3d-inspect-id">${escapeHtml(held.id)}</p>
-    <p class="graph-3d-inspect-title">${escapeHtml(held.feature.title || held.id)}</p>
-    <p class="graph-3d-inspect-kicker">${related.length} related</p>
-    <ul class="graph-3d-inspect-rels">${relItems}</ul>
-  `;
+  // Selected + related detail lives in the left roster (CORE-029), same as 2D.
+  card.hidden = true;
+  card.innerHTML = '';
 }
 
 function graph3dFeatureBlurb(feature, maxLen = 72) {
@@ -2221,12 +2465,23 @@ function ensureGraph3dRoster(root) {
     roster.setAttribute('aria-label', 'Features currently in the 3D viewport');
     roster.innerHTML = `
       <div class="graph-3d-roster-head">
-        <p class="graph-3d-roster-kicker">In view</p>
+        <p class="graph-3d-roster-kicker" id="graph3dRosterKicker">In view</p>
         <p class="graph-3d-roster-count" id="graph3dRosterCount">0</p>
       </div>
+      <div class="graph-2d-related-focus" id="graph3dRelatedFocus" hidden></div>
       <div class="graph-3d-roster-list" id="graph3dRosterList" role="list"></div>
     `;
     root.appendChild(roster);
+  } else if (!roster.querySelector('#graph3dRelatedFocus')) {
+    const head = roster.querySelector('.graph-3d-roster-head');
+    const focus = document.createElement('div');
+    focus.className = 'graph-2d-related-focus';
+    focus.id = 'graph3dRelatedFocus';
+    focus.hidden = true;
+    if (head && head.nextSibling) roster.insertBefore(focus, head.nextSibling);
+    else roster.appendChild(focus);
+    const kicker = roster.querySelector('.graph-3d-roster-kicker');
+    if (kicker && !kicker.id) kicker.id = 'graph3dRosterKicker';
   }
   if (roster.dataset.bound !== '1') {
     roster.dataset.bound = '1';
@@ -2284,20 +2539,107 @@ function updateGraph3dRoster(projected, width, height, force = false) {
   const roster = ensureGraph3dRoster(root);
   const list = document.getElementById('graph3dRosterList');
   const countEl = document.getElementById('graph3dRosterCount');
+  const kicker = document.getElementById('graph3dRosterKicker') || roster.querySelector('.graph-3d-roster-kicker');
+  const focusEl = document.getElementById('graph3dRelatedFocus');
   if (!list || !countEl) return;
 
-  roster.classList.toggle('is-pinned', Boolean(graph3d.grabbedId));
+  const pinnedId = graph3d.grabbedId;
   roster.hidden = false;
+  // Related mode uses an in-roster focus card; do not shove the panel down for the old inspect card.
+  roster.classList.toggle('is-pinned', false);
+  roster.classList.toggle('is-related', Boolean(pinnedId));
+
+  if (pinnedId) {
+    const focusFeature = graph3dFeatureById(pinnedId) || { featureId: pinnedId, title: pinnedId };
+    const related = graph3dRelatedItems(pinnedId);
+    const reserved = 150;
+    const itemH = 72;
+    const maxItems = Math.max(2, Math.min(10, Math.floor((height - reserved) / itemH)));
+    const visible = related.slice(0, maxItems);
+    const contentKey = `related|${pinnedId}|${visible.map((item) => item.id).join(',')}|${maxItems}`;
+    const now = performance.now();
+    if (contentKey === graph3d.rosterContentKey) {
+      syncGraph3dRosterActive();
+      graph3d.rosterUpdatedAt = now;
+      return;
+    }
+    if (!force && (now - graph3d.rosterUpdatedAt) < 220) {
+      syncGraph3dRosterActive();
+      return;
+    }
+    graph3d.rosterContentKey = contentKey;
+    graph3d.rosterKey = contentKey;
+    graph3d.rosterUpdatedAt = now;
+
+    if (kicker) kicker.textContent = 'Related';
+    roster.setAttribute('aria-label', 'Features related to the selected node');
+    countEl.textContent = related.length > visible.length
+      ? `${visible.length} of ${related.length}`
+      : String(related.length);
+
+    if (focusEl) {
+      const focusBlurb = graph3dFeatureBlurb(focusFeature, 90);
+      const focusStatus = String(focusFeature.status || '').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+      focusEl.hidden = false;
+      focusEl.innerHTML = `
+        <div class="graph-2d-related-focus-card">
+          <span class="graph-3d-roster-id">${escapeHtml(pinnedId)}</span>
+          <span class="graph-3d-roster-title">${escapeHtml(truncateGraphTitle(focusFeature.title || pinnedId, 44))}</span>
+          ${focusBlurb ? `<span class="graph-3d-roster-blurb">${escapeHtml(focusBlurb)}</span>` : ''}
+          ${focusStatus ? `<span class="graph-3d-roster-status">${escapeHtml(focusStatus)}</span>` : ''}
+        </div>
+      `;
+    }
+
+    if (!visible.length) {
+      list.innerHTML = '<p class="graph-3d-roster-empty">No linked or same-category features yet.</p>';
+      return;
+    }
+
+    list.innerHTML = visible.map((item) => {
+      const title = item.feature.title || item.id;
+      const blurb = graph3dFeatureBlurb(item.feature, 78);
+      const status = String(item.feature.status || '').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim();
+      const relation = item.types.join(', ');
+      const active = item.id === graph3d.grabbedId || item.id === graph3d.hoverId;
+      return `
+        <button type="button" class="graph-3d-roster-item${active ? ' is-active' : ''}" data-graph3d-roster-id="${escapeHtml(item.id)}" role="listitem">
+          <span class="graph-3d-roster-id">${escapeHtml(item.id)}</span>
+          <span class="graph-2d-related-type">${escapeHtml(relation)}</span>
+          <span class="graph-3d-roster-title">${escapeHtml(truncateGraphTitle(title, 40))}</span>
+          ${blurb ? `<span class="graph-3d-roster-blurb">${escapeHtml(blurb)}</span>` : ''}
+          ${status ? `<span class="graph-3d-roster-status">${escapeHtml(status)}</span>` : ''}
+        </button>
+      `;
+    }).join('');
+    return;
+  }
+
+  if (focusEl) {
+    focusEl.hidden = true;
+    focusEl.innerHTML = '';
+  }
+  if (kicker) kicker.textContent = 'In view';
+  roster.setAttribute('aria-label', 'Features currently in the 3D viewport');
 
   const inView = graph3dInViewItems(projected, width, height);
-  const reserved = graph3d.grabbedId ? 210 : 88;
+  const reserved = 88;
   const itemH = 64;
   const maxItems = Math.max(2, Math.min(12, Math.floor((height - reserved) / itemH)));
   const visible = inView.slice(0, maxItems);
-  const key = `${graph3d.grabbedId || ''}|${visible.map((item) => item.node.id).join(',')}|${maxItems}`;
+  const contentKey = `inview|${visible.map((item) => item.node.id).join(',')}|${maxItems}`;
   const now = performance.now();
-  if (!force && key === graph3d.rosterKey && (now - graph3d.rosterUpdatedAt) < 220) return;
-  graph3d.rosterKey = key;
+  if (contentKey === graph3d.rosterContentKey) {
+    syncGraph3dRosterActive();
+    graph3d.rosterUpdatedAt = now;
+    return;
+  }
+  if (!force && (now - graph3d.rosterUpdatedAt) < 220) {
+    syncGraph3dRosterActive();
+    return;
+  }
+  graph3d.rosterContentKey = contentKey;
+  graph3d.rosterKey = contentKey;
   graph3d.rosterUpdatedAt = now;
 
   const totalInView = inView.length;
@@ -2334,14 +2676,14 @@ function updateGraph3dHud() {
   if (!hud || !status || !resume) return;
   const held = graph3d.nodes.find((node) => node.id === graph3d.grabbedId);
   const spinning = graph3d.autoRotate && !graph3d.grabbedId;
-  const relatedCount = held ? graph3dRelationsFor(held.id).size : 0;
+  const relatedCount = held ? graph3dRelatedItems(held.id).length : 0;
   hud.classList.toggle('is-paused', !spinning);
   if (held) {
     status.textContent = `Selected ${held.id} · ${relatedCount} related — drag to orbit, click again to open`;
   } else if (!spinning) {
     status.textContent = 'Paused — drag to orbit the cloud';
   } else {
-    status.textContent = 'Spinning — in-view features list on the left; click one to pin it';
+    status.textContent = 'Spinning — in-view features list on the left; click one to see related';
   }
   resume.hidden = spinning;
   updateGraph3dInspect();
@@ -2459,9 +2801,16 @@ function drawGraph3dFrame(ts) {
     ctx.fillText(label, lx, labelY);
   });
   const byId = new Map(projected.map((item) => [item.node.id, item]));
-  const focusId = graph3d.grabbedId || graph3d.hoverId;
-  const relations = graph3dRelationsFor(focusId);
+  const selectedId = graph3d.grabbedId || graph3d.hoverId;
+  const relations = graph3dRelationsFor(selectedId);
   const neighborIds = new Set(relations.keys());
+  if (selectedId) {
+    for (const peer of graph3dSameCategoryPeers(selectedId)) {
+      if (peer.featureId) neighborIds.add(peer.featureId);
+    }
+  }
+  if (graph3d.hoverId) neighborIds.add(graph3d.hoverId);
+  const focusId = selectedId;
   const labels = graph3dLabelPlan(projected, focusId, neighborIds);
   const pulse = 0.55 + (0.45 * Math.sin((ts || 0) * 0.005));
 
@@ -2752,9 +3101,10 @@ function ensureGraph3dChrome(root) {
     <canvas id="graph3dCanvas" class="feature-graph-3d-canvas" role="img" aria-label="Rotating three-dimensional feature graph"></canvas>
     <aside class="graph-3d-roster" id="graph3dRoster" aria-label="Features currently in the 3D viewport">
       <div class="graph-3d-roster-head">
-        <p class="graph-3d-roster-kicker">In view</p>
+        <p class="graph-3d-roster-kicker" id="graph3dRosterKicker">In view</p>
         <p class="graph-3d-roster-count" id="graph3dRosterCount">0</p>
       </div>
+      <div class="graph-2d-related-focus" id="graph3dRelatedFocus" hidden></div>
       <div class="graph-3d-roster-list" id="graph3dRosterList" role="list"></div>
     </aside>
     <div class="graph-3d-inspect" id="graph3dInspect" hidden></div>
