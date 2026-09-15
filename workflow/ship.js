@@ -165,12 +165,19 @@ function parsePorcelainPath(line) {
 }
 
 function listChangedFiles(cwd) {
-  const status = runGit(cwd, ['status', '--porcelain'], { trim: false });
-  if (!status.stdout.trim()) return [];
+  if (!cwd) return [];
+  const status = runGit(cwd, ['status', '--porcelain'], { allowFail: true, trim: false });
+  if (!status.ok || !String(status.stdout || '').trim()) return [];
   return status.stdout.split('\n').map(parsePorcelainPath).filter(Boolean);
 }
 
 export function describeGhAuth(cwd) {
+  if (!cwd) {
+    return {
+      ready: false,
+      error: 'This FEATURES.md path is not inside a git repository. Ship needs a git project root.',
+    };
+  }
   const token = (process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim();
   if (token) {
     const who = runGh(cwd, ['api', 'user', '--jq', '.login'], { allowFail: true });
@@ -253,9 +260,9 @@ export function describeShip({ feature, completionContent, reviewContent, workfl
   if (!String(completionContent || '').trim()) missing.push('completion summary');
   if (!String(reviewContent || '').trim()) missing.push('security review');
   const blockers = securityReviewHasBlockers(reviewContent);
-  const files = cwd ? listShipableFiles(cwd) : [];
+  const files = listShipableFiles(cwd);
   const draft = buildDraftPr({ feature, completionContent, files });
-  const gh = cwd ? describeGhAuth(cwd) : { ready: false, error: 'Git root not found.' };
+  const gh = describeGhAuth(cwd);
   const mrUrl = (workflow && workflow.mrUrl) || extractPrUrlFromNotes(feature && feature.notes);
   return {
     canCreate: missing.length === 0 && !blockers.blocked && gh.ready,
@@ -275,6 +282,9 @@ export function describeShip({ feature, completionContent, reviewContent, workfl
 }
 
 export function createFeatureMergeRequest({ cwd, feature, completionContent, reviewContent, title, body }) {
+  if (!cwd) {
+    throw new Error('This FEATURES.md path is not inside a git repository. Ship needs a git project root.');
+  }
   if (!String(completionContent || '').trim()) {
     throw new Error('Write the completion summary before creating a merge request.');
   }

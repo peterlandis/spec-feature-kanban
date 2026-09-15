@@ -1092,6 +1092,11 @@ app.post('/api/features/:featureId/checkout-branch', (req, res) => {
     if (!found) return res.status(404).json({ error: 'Feature not found' });
     const specRoot = resolveSpecRoot(activeFeaturesPath);
     const cwd = resolveGitRoot(activeFeaturesPath);
+    if (!cwd) {
+      return res.status(400).json({
+        error: 'This FEATURES.md path is not inside a git repository. Check out is unavailable until the project has a .git root.',
+      });
+    }
     const workflow = getFeatureWorkflow(specRoot, found.feature.featureId) || {};
     const git = describeFeatureBranch({
       cwd,
