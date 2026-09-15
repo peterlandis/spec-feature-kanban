@@ -19,8 +19,8 @@ This document tracks features and tasks for the project. Use this file to coordi
 ## Feature Categories
 
 ### 🔧 Core Features
-| Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Notes |
-|------------|-------|-------------|-------|--------|----------|---------------|-------|
+| Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Depends | Notes |
+|------------|-------|-------------|-------|--------|----------|---------------|---------|-------|
 
 ## How to Use This File
 
@@ -28,12 +28,13 @@ This document tracks features and tasks for the project. Use this file to coordi
 
 1. Create a new row in the appropriate category table
 2. Assign a unique Feature ID (e.g., `CAT-001`)
-3. Fill in Title, Description, Status, Assignee, and Notes
-4. Set status to `📋 Planned` initially
+3. Fill in Title, Description, Status, Assignee, Depends, and Notes
+4. Set Depends to comma-separated prerequisite IDs (or `-`)
+5. Set status to `📋 Planned` initially
 
 ### Updating Feature Status
 
 1. Find the feature in the table
 2. Update the Status column
 3. Update Assignee if ownership changes
-4. Add notes about progress or blockers
+4. Keep dependencies in the Depends column (not Notes)

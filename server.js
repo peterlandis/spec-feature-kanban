@@ -50,13 +50,20 @@ import {
   mergeNotesWithPrUrl,
 } from './workflow/ship.js';
 import {
-  appendDependsOnNote,
   buildFeatureGraph,
   flattenFeaturesFromCategories,
   loadPlanContentsForFeatures,
   normalizeFeatureId,
   suggestFeatureDependencies,
 } from './workflow/feature-relations.js';
+import {
+  appendDependsOn,
+  ensureFeaturesSchema,
+  isSchemaRepairConfigured,
+  needsAiSchemaRepair,
+  normalizeFeatureDepends,
+  repairFeaturesSchemaWithAi,
+} from './workflow/features-schema.js';
 import { briefJarvis } from './workflow/jarvis-brief.js';
 import { buildJarvisContext, nextGateHint } from './workflow/jarvis-context.js';
 import { suggestFocusFeatures } from './workflow/focus-suggestions.js';
@@ -74,11 +81,18 @@ const PROJECT_ROOT = __dirname;
 const DEFAULT_FEATURES_RELATIVE_PATH = path.join('specifications', 'FEATURES.md');
 const CONFIG_PATH = path.join(PROJECT_ROOT, '.features-kanban.json');
 let lastScaffoldSummary = null;
+let lastSchemaSummary = null;
 
 function takeScaffoldSummary() {
   const summary = lastScaffoldSummary;
   lastScaffoldSummary = null;
   return summary || { message: null, createdCount: 0 };
+}
+
+function takeSchemaSummary() {
+  const summary = lastSchemaSummary;
+  lastSchemaSummary = null;
+  return summary || { message: null, changed: false, method: 'none' };
 }
 
 function getTemplateMarkdown() {
@@ -101,8 +115,8 @@ This document tracks features and tasks for the project. Use this file to coordi
 ## Feature Categories
 
 ### 🔧 Core Features
-| Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Notes |
-|------------|-------|-------------|-------|--------|----------|---------------|-------|
+| Feature ID | Title | Description | Phase | Status | Assignee | Plan Document | Depends | Notes |
+|------------|-------|-------------|-------|--------|----------|---------------|---------|-------|
 
 ## How to Use This File
 
@@ -663,10 +677,46 @@ function findFeatureInParsed(parsed, featureId) {
 }
 
 function loadRegistry() {
-  const content = readFeaturesFile();
+  let content = readFeaturesFile();
+  const ensured = ensureFeaturesSchema(content);
+  if (ensured.changed) {
+    writeFeaturesFile(ensured.content);
+    content = ensured.content;
+    lastSchemaSummary = {
+      changed: true,
+      method: ensured.method,
+      message: `Updated FEATURES.md schema (${ensured.method}): added Depends column / migrated deps from Notes`,
+      featureCount: ensured.featureCount,
+    };
+  }
   const { preamble, postamble } = extractPreambleAndPostamble(content);
   const parsed = parseFeaturesMd(content);
   return { content, preamble, postamble, parsed };
+}
+
+async function maybeAiRepairActiveFeaturesFile() {
+  const content = readFeaturesFile();
+  if (!needsAiSchemaRepair(content, validateFeaturesMarkdownFormat)) return null;
+  if (!isSchemaRepairConfigured()) {
+    lastSchemaSummary = {
+      changed: false,
+      method: 'none',
+      needsRepair: true,
+      message: 'FEATURES.md looks malformed; add an OpenAI or Grok key in Settings to auto-repair the schema.',
+    };
+    return lastSchemaSummary;
+  }
+  const repaired = await repairFeaturesSchemaWithAi(content, {
+    validateFn: validateFeaturesMarkdownFormat,
+  });
+  writeFeaturesFile(repaired.content);
+  lastSchemaSummary = {
+    changed: true,
+    method: 'ai',
+    message: `AI repaired FEATURES.md schema (${repaired.featureCount} features)`,
+    featureCount: repaired.featureCount,
+  };
+  return lastSchemaSummary;
 }
 
 function saveRegistry(parsed, preamble, postamble) {
@@ -787,11 +837,10 @@ app.get('/api/workflow/process-summary', (req, res) => {
 });
 
 /** GET /api/features - Parse and return features as JSON */
-app.get('/api/features', (req, res) => {
+app.get('/api/features', async (req, res) => {
   try {
-    const content = readFeaturesFile();
-    const { preamble, postamble } = extractPreambleAndPostamble(content);
-    const parsed = parseFeaturesMd(content);
+    await maybeAiRepairActiveFeaturesFile();
+    const { parsed, preamble, postamble } = loadRegistry();
     const categories = attachWorkflowSummaries(parsed.categories);
     const specRoot = resolveSpecRoot(activeFeaturesPath);
     const flat = flattenFeaturesFromCategories(categories);
@@ -800,6 +849,40 @@ app.get('/api/features', (req, res) => {
     res.json({
       categories,
       graph,
+      preamble,
+      postamble,
+      schema: takeSchemaSummary(),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/features/repair-schema - Force AI schema repair when configured */
+app.post('/api/features/repair-schema', async (req, res) => {
+  try {
+    if (!isSchemaRepairConfigured()) {
+      return res.status(400).json({
+        error: 'AI schema repair needs an OpenAI or xAI/Grok API key in Settings.',
+      });
+    }
+    const content = readFeaturesFile();
+    const repaired = await repairFeaturesSchemaWithAi(content, {
+      validateFn: validateFeaturesMarkdownFormat,
+    });
+    writeFeaturesFile(repaired.content);
+    lastSchemaSummary = {
+      changed: true,
+      method: 'ai',
+      message: `AI repaired FEATURES.md schema (${repaired.featureCount} features)`,
+      featureCount: repaired.featureCount,
+    };
+    const { parsed, preamble, postamble } = loadRegistry();
+    res.json({
+      ok: true,
+      schema: takeSchemaSummary(),
+      categories: attachWorkflowSummaries(parsed.categories),
       preamble,
       postamble,
     });
@@ -1038,7 +1121,7 @@ app.post('/api/phases/cancel', (req, res) => {
   }
 });
 
-/** POST /api/features/:featureId/dependencies - Append Depends on <targetId> to Notes */
+/** POST /api/features/:featureId/dependencies - Add targetId to Depends column */
 app.post('/api/features/:featureId/dependencies', (req, res) => {
   try {
     const targetId = normalizeFeatureId(req.body && req.body.targetId);
@@ -1056,7 +1139,7 @@ app.post('/api/features/:featureId/dependencies', (req, res) => {
     const target = findFeatureInParsed(parsed, targetId);
     if (!target) return res.status(404).json({ error: `Dependency target ${targetId} was not found.` });
 
-    found.feature.notes = appendDependsOnNote(found.feature.notes, targetId);
+    appendDependsOn(found.feature, targetId);
     saveRegistry(parsed, preamble, postamble);
 
     const content = readFeaturesFile();
@@ -1143,6 +1226,11 @@ app.put('/api/features', (req, res) => {
     const { categories, preamble, postamble } = req.body;
     if (!categories || !Array.isArray(categories)) {
       return res.status(400).json({ error: 'categories array required' });
+    }
+    for (const category of categories) {
+      for (const feature of category.features || []) {
+        normalizeFeatureDepends(feature);
+      }
     }
     const parsed = { categories };
     const content = serializeToMarkdown(parsed, preamble || '', postamble || '');

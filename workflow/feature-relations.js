@@ -1,9 +1,9 @@
 /**
- * Feature relationship graph (CORE-017 / CORE-028).
+ * Feature relationship graph (CORE-017 / CORE-028 / CORE-033).
  *
- * Relation sources (v1 — no structured Depends column yet):
- * - **depends on:** Registry Notes matching "Depends on …" (feature IDs), or plan ## Dependencies
- *   lines with "Prerequisite:" / "Depends on" (IDs only if target is in the loaded feature set).
+ * Relation sources:
+ * - **depends on:** FEATURES.md Depends column (preferred), registry Notes matching
+ *   "Depends on …" (legacy), or plan ## Dependencies lines with "Prerequisite:" / "Depends on".
  * - **blocked by:** Status contains Blocked and Notes/plan Dependencies name another tracked ID.
  * - **same category:** Pairwise links only when a category has at most SAME_CATEGORY_MAX members
  *   (avoids a complete mesh on large tables). Larger categories are shown as visual clusters (CORE-028).
@@ -50,9 +50,39 @@ export function normalizeFeatureId(raw) {
   return `${m[1].toUpperCase()}-${String(m[2]).padStart(3, '0')}`;
 }
 
+export function extractDependsOnFromFeature(feature) {
+  if (!feature) return [];
+  const id = feature.featureId;
+  const fromColumn = extractFeatureIds(feature.depends || '', { excludeId: id });
+  const fromNotes = extractDependsOnFromNotes(feature.notes, id);
+  const seen = new Set();
+  const out = [];
+  for (const dep of [...fromColumn, ...fromNotes]) {
+    if (seen.has(dep)) continue;
+    seen.add(dep);
+    out.push(dep);
+  }
+  return out;
+}
+
 export function extractDependsOnFromNotes(notes, featureId) {
   if (!notes) return [];
-  const text = String(notes);
+  let text = String(notes);
+  // Expand compact lists like CORE-017/018/029 into full IDs before extraction.
+  text = text.replace(
+    /\b([A-Z]{2,8})-(\d{3})((?:\/(?:[A-Z]{2,8}-)?\d{3})+)/gi,
+    (full, prefix, first, rest) => {
+      const ids = [`${prefix.toUpperCase()}-${first}`];
+      for (const part of rest.split('/').filter(Boolean)) {
+        if (/^[A-Z]{2,8}-\d{3}$/i.test(part)) {
+          ids.push(part.toUpperCase().replace(/^([A-Z]{2,8})-(\d+)$/i, (_, p, n) => `${p.toUpperCase()}-${n.padStart(3, '0')}`));
+        } else if (/^\d{3}$/.test(part)) {
+          ids.push(`${prefix.toUpperCase()}-${part}`);
+        }
+      }
+      return ids.join(', ');
+    },
+  );
   const ids = new Set();
   const dependsRe = /depends\s+on\s+([^.;\n]+)/gi;
   let block;
@@ -175,7 +205,7 @@ export function buildFeatureGraph(features, options = {}) {
     const planDeps = extractPlanDependenciesSection(planText);
 
     const dependsTargets = new Set([
-      ...extractDependsOnFromNotes(f.notes, id),
+      ...extractDependsOnFromFeature(f),
       ...planDeps.prerequisiteIds,
     ]);
     for (const target of dependsTargets) {
@@ -264,7 +294,7 @@ function existingDependsPairs(features, planContentsById) {
     const planText = planContentsById[id] || '';
     const planDeps = extractPlanDependenciesSection(planText);
     for (const target of [
-      ...extractDependsOnFromNotes(f.notes, id),
+      ...extractDependsOnFromFeature(f),
       ...planDeps.prerequisiteIds,
     ]) {
       pairs.add(`${id}->${target}`);
@@ -306,7 +336,7 @@ export function suggestFeatureDependencies(features, options = {}) {
   }
 
   for (const f of list) {
-    const blob = [f.title, f.description, f.notes, f.planDocument, planContentsById[f.featureId]]
+    const blob = [f.title, f.description, f.depends, f.notes, f.planDocument, planContentsById[f.featureId]]
       .filter(Boolean)
       .join('\n');
     for (const mentioned of extractFeatureIds(blob, { excludeId: f.featureId })) {

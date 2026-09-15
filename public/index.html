@@ -110,7 +110,7 @@
           <p class="graph-suggest-title">Suggested dependencies</p>
           <button type="button" class="btn btn-secondary" id="closeGraphSuggest">Close</button>
         </div>
-        <p class="graph-suggest-hint">Review proposed Depends-on links. Apply writes them into the feature Notes column.</p>
+        <p class="graph-suggest-hint">Review proposed Depends-on links. Apply writes them into the feature Depends column.</p>
         <div class="graph-suggest-list" id="graphSuggestList"></div>
       </div>
       <div class="graph-legend" id="graphLegend" aria-label="Edge type legend"></div>
@@ -211,8 +211,12 @@
           <input type="text" id="planDocument" placeholder="-">
         </div>
         <div class="form-group">
+          <label for="depends">Depends</label>
+          <input type="text" id="depends" placeholder="CORE-017, CORE-030 or -" title="Comma-separated feature IDs this feature depends on">
+        </div>
+        <div class="form-group">
           <label for="notes">Notes</label>
-          <textarea id="notes" rows="2" placeholder="Optional notes"></textarea>
+          <textarea id="notes" rows="2" placeholder="Optional notes (not for dependencies)"></textarea>
         </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" id="cancelModal">Cancel</button>

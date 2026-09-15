@@ -13,6 +13,7 @@ Feature ID: ${quote(feature.featureId)}
 Title: ${quote(feature.title)}
 Description: ${quote(feature.description)}
 Phase: ${quote(feature.phase)}
+Depends: ${quote(feature.depends || '-')}
 Notes: ${quote(feature.notes)}
 
 Fill in these existing files using the repo templates and this feature:

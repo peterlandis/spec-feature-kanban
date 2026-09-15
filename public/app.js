@@ -4761,6 +4761,7 @@ function openCreateModal(preselectedCategoryTitleOrEvent) {
   document.getElementById('description').value = '';
   document.getElementById('phase').value = '-';
   document.getElementById('planDocument').value = '-';
+  document.getElementById('depends').value = '-';
   document.getElementById('notes').value = '';
   document.getElementById('status').value = '📋 Planned';
 
@@ -4794,6 +4795,7 @@ function openEditModal(feature) {
   document.getElementById('description').value = feature.description || '';
   document.getElementById('phase').value = feature.phase || '-';
   document.getElementById('planDocument').value = feature.planDocument || '-';
+  document.getElementById('depends').value = feature.depends || '-';
   document.getElementById('notes').value = feature.notes || '';
   document.getElementById('status').value = feature.status || '📋 Planned';
 
@@ -4912,6 +4914,7 @@ async function handleFormSubmit(e) {
     ? document.getElementById('assigneeOther').value.trim() || '-'
     : (assigneeSel || '-');
   const planDocument = document.getElementById('planDocument').value.trim() || '-';
+  const depends = document.getElementById('depends').value.trim() || '-';
   const notes = document.getElementById('notes').value.trim() || '';
   const categoryTitle = getSelectedCategory();
 
@@ -4932,6 +4935,7 @@ async function handleFormSubmit(e) {
         f.status = status;
         f.assignee = assignee;
         f.planDocument = planDocument;
+        f.depends = depends;
         f.notes = notes;
         if (categoryTitle !== cat.title) {
           cat.features = cat.features.filter((x) => x.featureId !== oldId);
@@ -4973,6 +4977,7 @@ async function handleFormSubmit(e) {
       status,
       assignee,
       planDocument,
+      depends,
       notes,
       categoryTitle,
     });
@@ -4987,6 +4992,11 @@ async function handleFormSubmit(e) {
 async function load() {
   try {
     state = await fetchFeatures();
+    if (state.schema && state.schema.changed && state.schema.message) {
+      toast(state.schema.message);
+    } else if (state.schema && state.schema.needsRepair && state.schema.message) {
+      toast(state.schema.message, 'error');
+    }
     renderMainView();
     if (typeof window.syncJarvis === 'function') window.syncJarvis();
   } catch (err) {
@@ -5040,7 +5050,7 @@ async function applyGraphDependency(fromId, toId) {
   if (data.categories) state.categories = data.categories;
   if (data.graph) state.graph = data.graph;
   renderMainView();
-  toast(`Added Depends on ${toId} to ${fromId}`);
+  toast(`Added ${toId} to Depends for ${fromId}`);
   openGraphSuggestPanel().catch(() => {});
 }
 
