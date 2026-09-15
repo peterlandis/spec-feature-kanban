@@ -994,15 +994,18 @@ function renderMainView() {
   const columns = document.getElementById('columns');
   const processView = document.getElementById('processView');
   const graphView = document.getElementById('graphView');
+  const focusStrip = document.getElementById('boardFocusStrip');
   if (columns) columns.hidden = view !== 'board';
   if (processView) processView.hidden = view !== 'process';
   if (graphView) graphView.hidden = view !== 'graph';
+  if (focusStrip) focusStrip.hidden = view !== 'board';
   syncViewToggleButtons();
   if (view === 'process') renderProcess();
   else if (view === 'graph') renderGraphPage();
   else {
     stopProcessPolling();
     renderColumns();
+    refreshBoardFocus().catch(() => {});
   }
 }
 
@@ -3338,6 +3341,76 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+function plainStatusLabel(status) {
+  const value = String(status || '');
+  if (value.includes('WorkInProgress')) return 'In progress';
+  if (value.includes('ReadyToMerge')) return 'Ready to merge';
+  if (value.includes('PlanReview')) return 'Plan review';
+  if (value.includes('Testing')) return 'Testing';
+  if (value.includes('Blocked')) return 'Blocked';
+  if (value.includes('Paused')) return 'Paused';
+  if (value.includes('Planning')) return 'Planning';
+  if (value.includes('Complete')) return 'Complete';
+  if (value.includes('Planned')) return 'Planned';
+  return value.replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim() || 'Open';
+}
+
+async function refreshBoardFocus() {
+  const strip = document.getElementById('boardFocusStrip');
+  const list = document.getElementById('boardFocusList');
+  if (!strip || !list || uiState.mainView !== 'board') return;
+  list.innerHTML = '<p class="board-focus-empty">Loading suggestions…</p>';
+  try {
+    const res = await fetch(`${API}/graph/focus-suggestions?limit=4`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to load focus suggestions');
+    }
+    const data = await res.json();
+    const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+    if (!suggestions.length) {
+      list.innerHTML = '<p class="board-focus-empty">No open features to suggest right now.</p>';
+      return;
+    }
+    list.innerHTML = suggestions.map((item, index) => {
+      const role = item.role === 'start' || index === 0 ? 'Start here' : `Next ${index}`;
+      const why = item.why || (item.reasons && item.reasons[0]) || '';
+      const gate = item.nextGate || '';
+      return `
+        <article class="board-focus-card${index === 0 ? ' is-start' : ''}" data-focus-id="${escapeHtml(item.featureId)}">
+          <div class="board-focus-card-top">
+            <span class="board-focus-role">${escapeHtml(role)}</span>
+            <span class="board-focus-status">${escapeHtml(plainStatusLabel(item.status))}</span>
+          </div>
+          <p class="board-focus-id">${escapeHtml(item.featureId)}</p>
+          <p class="board-focus-title">${escapeHtml(item.title || item.featureId)}</p>
+          ${why ? `<p class="board-focus-why">${escapeHtml(why)}</p>` : ''}
+          ${gate ? `<p class="board-focus-gate">${escapeHtml(gate)}</p>` : ''}
+          <div class="board-focus-actions">
+            <button type="button" class="btn btn-primary" data-focus-open="${escapeHtml(item.featureId)}">Open</button>
+            <button type="button" class="btn btn-secondary" data-focus-graph="${escapeHtml(item.featureId)}">On graph</button>
+          </div>
+        </article>
+      `;
+    }).join('');
+  } catch (err) {
+    list.innerHTML = `<p class="board-focus-empty">${escapeHtml(err.message || 'Could not load suggestions')}</p>`;
+  }
+}
+
+function focusGraphFeature(featureId) {
+  if (!featureId) return;
+  setMainView('graph');
+  window.setTimeout(() => {
+    if (uiState.graphMode === '3d') {
+      pauseGraph3dSpin(featureId);
+      updateGraph3dHud();
+    } else {
+      setGraphFocus(featureId);
+    }
+  }, 60);
+}
+
 function renderColumns() {
   const container = document.getElementById('columns');
   container.innerHTML = '';
@@ -4587,6 +4660,22 @@ document.getElementById('refresh').addEventListener('click', load);
 document.getElementById('viewBoard')?.addEventListener('click', () => setMainView('board'));
 document.getElementById('viewProcess')?.addEventListener('click', () => setMainView('process'));
 document.getElementById('viewGraph')?.addEventListener('click', () => setMainView('graph'));
+document.getElementById('refreshBoardFocus')?.addEventListener('click', () => {
+  refreshBoardFocus().catch((err) => toast(err.message || 'Failed to refresh focus', 'error'));
+});
+document.getElementById('boardFocusList')?.addEventListener('click', (event) => {
+  const openBtn = event.target.closest('[data-focus-open]');
+  if (openBtn) {
+    const id = openBtn.getAttribute('data-focus-open');
+    if (id) openWorkspace(id).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
+    return;
+  }
+  const graphBtn = event.target.closest('[data-focus-graph]');
+  if (graphBtn) {
+    const id = graphBtn.getAttribute('data-focus-graph');
+    if (id) focusGraphFeature(id);
+  }
+});
 document.getElementById('graphMode2d')?.addEventListener('click', () => setGraphMode('2d'));
 document.getElementById('graphMode3d')?.addEventListener('click', () => setGraphMode('3d'));
 document.getElementById('suggestGraphDeps')?.addEventListener('click', () => {

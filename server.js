@@ -58,7 +58,8 @@ import {
   suggestFeatureDependencies,
 } from './workflow/feature-relations.js';
 import { briefJarvis } from './workflow/jarvis-brief.js';
-import { buildJarvisContext } from './workflow/jarvis-context.js';
+import { buildJarvisContext, nextGateHint } from './workflow/jarvis-context.js';
+import { suggestFocusFeatures } from './workflow/focus-suggestions.js';
 import { listJarvisVoices, synthesizeJarvisSpeech } from './workflow/jarvis-voice.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -714,6 +715,28 @@ app.get('/api/graph/dependency-suggestions', (req, res) => {
         toTitle: (byId.get(item.to) || {}).title || item.to,
       })),
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/graph/focus-suggestions - Where to start / next features (CORE-030) */
+app.get('/api/graph/focus-suggestions', (req, res) => {
+  try {
+    const content = readFeaturesFile();
+    const parsed = parseFeaturesMd(content);
+    const categories = attachWorkflowSummaries(parsed.categories);
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const flat = flattenFeaturesFromCategories(categories);
+    const planContentsById = loadPlanContentsForFeatures(specRoot, flat);
+    const graph = buildFeatureGraph(flat, { planContentsById });
+    const limit = Math.max(1, Math.min(8, Number(req.query.limit) || 4));
+    const suggestions = suggestFocusFeatures(flat, graph, {
+      limit,
+      nextGateFor: nextGateHint,
+    });
+    res.json({ suggestions, generatedAt: new Date().toISOString() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
