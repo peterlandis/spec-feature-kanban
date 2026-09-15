@@ -50,9 +50,12 @@ import {
   mergeNotesWithPrUrl,
 } from './workflow/ship.js';
 import {
+  appendDependsOnNote,
   buildFeatureGraph,
   flattenFeaturesFromCategories,
   loadPlanContentsForFeatures,
+  normalizeFeatureId,
+  suggestFeatureDependencies,
 } from './workflow/feature-relations.js';
 import { briefJarvis } from './workflow/jarvis-brief.js';
 import { buildJarvisContext } from './workflow/jarvis-context.js';
@@ -686,6 +689,70 @@ app.get('/api/features', (req, res) => {
       graph,
       preamble,
       postamble,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/graph/dependency-suggestions - Proposed Depends-on links for human review */
+app.get('/api/graph/dependency-suggestions', (req, res) => {
+  try {
+    const content = readFeaturesFile();
+    const parsed = parseFeaturesMd(content);
+    const categories = attachWorkflowSummaries(parsed.categories);
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const flat = flattenFeaturesFromCategories(categories);
+    const planContentsById = loadPlanContentsForFeatures(specRoot, flat);
+    const suggestions = suggestFeatureDependencies(flat, { planContentsById });
+    const byId = new Map(flat.map((f) => [normalizeFeatureId(f.featureId) || f.featureId, f]));
+    res.json({
+      suggestions: suggestions.map((item) => ({
+        ...item,
+        fromTitle: (byId.get(item.from) || {}).title || item.from,
+        toTitle: (byId.get(item.to) || {}).title || item.to,
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/features/:featureId/dependencies - Append Depends on <targetId> to Notes */
+app.post('/api/features/:featureId/dependencies', (req, res) => {
+  try {
+    const targetId = normalizeFeatureId(req.body && req.body.targetId);
+    if (!targetId) {
+      return res.status(400).json({ error: 'targetId is required (e.g. QF-001).' });
+    }
+    const { parsed, preamble, postamble } = loadRegistry();
+    const found = findFeatureInParsed(parsed, req.params.featureId);
+    if (!found) return res.status(404).json({ error: 'Feature not found' });
+    const fromId = normalizeFeatureId(found.feature.featureId);
+    if (!fromId) return res.status(400).json({ error: 'Feature id is invalid.' });
+    if (fromId === targetId) {
+      return res.status(400).json({ error: 'A feature cannot depend on itself.' });
+    }
+    const target = findFeatureInParsed(parsed, targetId);
+    if (!target) return res.status(404).json({ error: `Dependency target ${targetId} was not found.` });
+
+    found.feature.notes = appendDependsOnNote(found.feature.notes, targetId);
+    saveRegistry(parsed, preamble, postamble);
+
+    const content = readFeaturesFile();
+    const reloaded = parseFeaturesMd(content);
+    const categories = attachWorkflowSummaries(reloaded.categories);
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const flat = flattenFeaturesFromCategories(categories);
+    const planContentsById = loadPlanContentsForFeatures(specRoot, flat);
+    const graph = buildFeatureGraph(flat, { planContentsById });
+    res.json({
+      ok: true,
+      feature: found.feature,
+      categories,
+      graph,
     });
   } catch (err) {
     console.error(err);

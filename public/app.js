@@ -83,9 +83,17 @@ const GRAPH_ZOOM_MAX = 5;
 const GRAPH_EDGE_LEGEND = [
   { type: 'depends on', label: 'depends on', className: 'edge-depends-on' },
   { type: 'blocked by', label: 'blocked by', className: 'edge-blocked-by' },
-  { type: 'same category', label: 'same category', className: 'edge-same-category', dashed: true },
+  { type: 'category group', label: 'category group', className: 'edge-category-cluster' },
   { type: 'plan link', label: 'plan link', className: 'edge-plan-link' },
 ];
+
+function isLabeledGraphEdge(type) {
+  return type === 'depends on' || type === 'blocked by' || type === 'plan link';
+}
+
+function visibleGraphEdges(edges) {
+  return (edges || []).filter((edge) => isLabeledGraphEdge(edge.type));
+}
 
 const PROCESS_MAIN_TRACK = [
   { id: 'not-started', label: 'Not started' },
@@ -1169,14 +1177,30 @@ function layoutFeatureNetwork(features, edges, width, height) {
   if (!count) return positions;
   const cx = width / 2;
   const cy = height / 2;
+  const clusters = groupFeaturesByCategory(features);
+  const catCount = Math.max(1, clusters.length);
+  const ring = Math.min(width, height) * (catCount <= 2 ? 0.18 : 0.30);
+  const categoryCenter = new Map();
+  clusters.forEach((cluster, index) => {
+    const angle = ((2 * Math.PI * index) / catCount) - (Math.PI / 2);
+    categoryCenter.set(cluster.title, {
+      x: cx + Math.cos(angle) * ring,
+      y: cy + Math.sin(angle) * ring,
+    });
+  });
+
   const nodes = features.map((feature, index) => {
-    const angle = ((2 * Math.PI * index) / count) - (Math.PI / 2);
-    const ring = 0.22 + (index % 4) * 0.11;
-    const radius = Math.min(width, height) * ring;
+    const cat = (feature.categoryTitle || '').trim() || 'Uncategorized';
+    const center = categoryCenter.get(cat) || { x: cx, y: cy };
+    const members = (clusters.find((c) => c.title === cat) || { memberIds: [feature.featureId] }).memberIds;
+    const localIndex = Math.max(0, members.indexOf(feature.featureId));
+    const localAngle = ((2 * Math.PI * localIndex) / Math.max(1, members.length)) - (Math.PI / 2);
+    const localR = 28 + Math.min(70, members.length * 7);
     return {
       id: feature.featureId,
-      x: cx + Math.cos(angle) * radius,
-      y: cy + Math.sin(angle) * radius,
+      category: cat,
+      x: center.x + Math.cos(localAngle) * localR * (0.55 + (index % 3) * 0.12),
+      y: center.y + Math.sin(localAngle) * localR * (0.55 + (index % 3) * 0.12),
       vx: 0,
       vy: 0,
     };
@@ -1189,7 +1213,7 @@ function layoutFeatureNetwork(features, edges, width, height) {
     len: edge.type === 'same category' ? 88 : 150,
   })).filter((spring) => spring.a && spring.b);
 
-  const iterations = 100;
+  const iterations = 90;
   for (let step = 0; step < iterations; step += 1) {
     const cool = 0.9 - (step / iterations) * 0.35;
     for (let i = 0; i < nodes.length; i += 1) {
@@ -1198,7 +1222,7 @@ function layoutFeatureNetwork(features, edges, width, height) {
         let dy = nodes[j].y - nodes[i].y;
         const distSq = (dx * dx) + (dy * dy) || 1;
         const dist = Math.sqrt(distSq);
-        const force = 2800 / distSq;
+        const force = 2200 / distSq;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         nodes[i].vx -= fx;
@@ -1221,8 +1245,11 @@ function layoutFeatureNetwork(features, edges, width, height) {
     }
     const pad = 42;
     for (const node of nodes) {
-      node.vx += (cx - node.x) * 0.01;
-      node.vy += (cy - node.y) * 0.01;
+      const home = categoryCenter.get(node.category) || { x: cx, y: cy };
+      node.vx += (home.x - node.x) * 0.035;
+      node.vy += (home.y - node.y) * 0.035;
+      node.vx += (cx - node.x) * 0.004;
+      node.vy += (cy - node.y) * 0.004;
       node.vx *= cool;
       node.vy *= cool;
       node.x += node.vx;
@@ -1237,15 +1264,130 @@ function layoutFeatureNetwork(features, edges, width, height) {
   return positions;
 }
 
-function renderGraphLegend(targetId = 'graphLegend') {
+function groupFeaturesByCategory(features) {
+  const fromApi = ((state.graph && state.graph.clusters) || [])
+    .map((cluster) => ({
+      title: cluster.title || 'Uncategorized',
+      memberIds: [...(cluster.memberIds || [])],
+    }))
+    .filter((cluster) => cluster.memberIds.length);
+  if (fromApi.length) {
+    const visible = new Set((features || []).map((f) => f.featureId));
+    return fromApi
+      .map((cluster) => ({
+        title: cluster.title,
+        memberIds: cluster.memberIds.filter((id) => visible.has(id)),
+      }))
+      .filter((cluster) => cluster.memberIds.length);
+  }
+  const map = new Map();
+  for (const feature of features || []) {
+    const title = (feature.categoryTitle || '').trim() || 'Uncategorized';
+    if (!map.has(title)) map.set(title, []);
+    map.get(title).push(feature.featureId);
+  }
+  return [...map.entries()].map(([title, memberIds]) => ({ title, memberIds }));
+}
+
+function convexHullPoints(points) {
+  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  if (pts.length <= 2) return pts;
+  const cross = (o, a, b) => ((a.x - o.x) * (b.y - o.y)) - ((a.y - o.y) * (b.x - o.x));
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i -= 1) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
+}
+
+function expandHull(points, pad = 28) {
+  if (!points.length) return [];
+  if (points.length === 1) {
+    const p = points[0];
+    return [
+      { x: p.x - pad, y: p.y - pad },
+      { x: p.x + pad, y: p.y - pad },
+      { x: p.x + pad, y: p.y + pad },
+      { x: p.x - pad, y: p.y + pad },
+    ];
+  }
+  let cx = 0;
+  let cy = 0;
+  for (const p of points) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= points.length;
+  cy /= points.length;
+  return points.map((p) => {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const dist = Math.hypot(dx, dy) || 1;
+    return {
+      x: p.x + ((dx / dist) * pad),
+      y: p.y + ((dy / dist) * pad),
+    };
+  });
+}
+
+const GRAPH_CLUSTER_COLORS = [
+  'rgba(88, 166, 255, 0.14)',
+  'rgba(63, 185, 80, 0.12)',
+  'rgba(210, 153, 34, 0.12)',
+  'rgba(240, 198, 216, 0.14)',
+  'rgba(121, 192, 255, 0.12)',
+  'rgba(163, 113, 247, 0.12)',
+  'rgba(248, 81, 73, 0.10)',
+  'rgba(139, 148, 158, 0.14)',
+];
+
+function clusterFillColor(index) {
+  return GRAPH_CLUSTER_COLORS[index % GRAPH_CLUSTER_COLORS.length];
+}
+
+function clusterStrokeColor(index) {
+  const fills = [
+    'rgba(88, 166, 255, 0.85)',
+    'rgba(63, 185, 80, 0.85)',
+    'rgba(210, 153, 34, 0.85)',
+    'rgba(240, 136, 184, 0.85)',
+    'rgba(121, 192, 255, 0.85)',
+    'rgba(163, 113, 247, 0.85)',
+    'rgba(248, 81, 73, 0.75)',
+    'rgba(139, 148, 158, 0.85)',
+  ];
+  return fills[index % fills.length];
+}
+
+function renderGraphLegend(targetId = 'graphLegend', features = null) {
   const legend = document.getElementById(targetId);
   if (!legend) return;
-  legend.innerHTML = GRAPH_EDGE_LEGEND.map((item) => `
+  const edgeBits = GRAPH_EDGE_LEGEND.map((item) => `
     <span class="graph-legend-item">
-      <span class="graph-legend-swatch ${item.dashed ? 'is-same-category' : ''} ${item.className}" aria-hidden="true"></span>
+      <span class="graph-legend-swatch ${item.className}" aria-hidden="true"></span>
       <span>${escapeHtml(item.label)}</span>
     </span>
   `).join('');
+  const clusters = groupFeaturesByCategory(features || graphRenderCache.features || getAllFeatures());
+  const categoryBits = clusters.map((cluster, index) => `
+    <span class="graph-legend-item graph-legend-category">
+      <span class="graph-legend-swatch edge-category-cluster" style="background:${clusterFillColor(index)}; border-color:${clusterStrokeColor(index)}" aria-hidden="true"></span>
+      <span>${escapeHtml(shortCategoryLabel(cluster.title))} (${cluster.memberIds.length})</span>
+    </span>
+  `).join('');
+  legend.innerHTML = `
+    <div class="graph-legend-row">${edgeBits}</div>
+    ${categoryBits ? `<div class="graph-legend-row graph-legend-categories"><span class="graph-legend-kicker">Categories</span>${categoryBits}</div>` : ''}
+  `;
 }
 
 function setGraphFocus(featureId) {
@@ -1417,12 +1559,90 @@ function drawFeatureNetwork(shell, { features, edges, positions, width, height, 
   const viewport = document.createElementNS(svgNs, 'g');
   viewport.setAttribute('class', 'feature-graph-viewport');
 
+  const clusterLayer = document.createElementNS(svgNs, 'g');
+  clusterLayer.setAttribute('class', 'feature-graph-clusters');
+  const clusterLabelLayer = document.createElementNS(svgNs, 'g');
+  clusterLabelLayer.setAttribute('class', 'feature-graph-cluster-labels');
+  const clusters = groupFeaturesByCategory(features);
+  const clusterLabelBoxes = [];
+  clusters.forEach((cluster, index) => {
+    const pts = cluster.memberIds
+      .map((id) => positions.get(id))
+      .filter(Boolean);
+    if (!pts.length) return;
+    const hull = expandHull(convexHullPoints(pts), 34);
+    if (hull.length < 2) return;
+    const path = document.createElementNS(svgNs, 'path');
+    const d = hull.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z';
+    path.setAttribute('d', d);
+    path.setAttribute('class', 'feature-graph-cluster');
+    path.setAttribute('fill', clusterFillColor(index));
+    clusterLayer.appendChild(path);
+
+    let cx = 0;
+    let clearTop = Infinity;
+    for (const id of cluster.memberIds) {
+      const pos = positions.get(id);
+      if (!pos) continue;
+      cx += pos.x;
+      const degree = graphNodeDegree(id, edges);
+      const radius = Math.min(16, 6 + degree * 1.15);
+      // Keep category chip above the feature ID text.
+      clearTop = Math.min(clearTop, pos.y - radius - 28);
+    }
+    cx /= pts.length;
+    let hullTop = Infinity;
+    for (const p of hull) hullTop = Math.min(hullTop, p.y);
+    let labelY = Math.min(clearTop, hullTop - 14);
+    const labelText = shortCategoryLabel(cluster.title);
+    const approxW = Math.max(72, labelText.length * 6.6);
+    const box = {
+      x: cx - (approxW / 2) - 6,
+      y: labelY - 12,
+      w: approxW + 12,
+      h: 18,
+    };
+    // Nudge up if this chip overlaps another category chip.
+    for (let guard = 0; guard < 8; guard += 1) {
+      const hit = clusterLabelBoxes.some((other) => (
+        box.x < other.x + other.w
+        && box.x + box.w > other.x
+        && box.y < other.y + other.h
+        && box.y + box.h > other.y
+      ));
+      if (!hit) break;
+      box.y -= 20;
+      labelY -= 20;
+    }
+    clusterLabelBoxes.push(box);
+
+    const bg = document.createElementNS(svgNs, 'rect');
+    bg.setAttribute('class', 'feature-graph-cluster-label-bg');
+    bg.setAttribute('x', String(box.x));
+    bg.setAttribute('y', String(box.y));
+    bg.setAttribute('width', String(box.w));
+    bg.setAttribute('height', String(box.h));
+    bg.setAttribute('rx', '4');
+    bg.setAttribute('fill', 'rgba(13, 17, 23, 0.92)');
+    bg.setAttribute('stroke', clusterStrokeColor(index));
+    clusterLabelLayer.appendChild(bg);
+    const label = document.createElementNS(svgNs, 'text');
+    label.setAttribute('class', 'feature-graph-cluster-label');
+    label.setAttribute('x', String(cx));
+    label.setAttribute('y', String(labelY));
+    label.setAttribute('text-anchor', 'middle');
+    label.textContent = labelText;
+    clusterLabelLayer.appendChild(label);
+  });
+  viewport.appendChild(clusterLayer);
+
   const edgeLayer = document.createElementNS(svgNs, 'g');
   edgeLayer.setAttribute('class', 'feature-graph-links');
   for (const edge of edges) {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
     if (!from || !to) continue;
+    if (!isLabeledGraphEdge(edge.type)) continue;
     const cls = `edge-${edge.type.replace(/\s+/g, '-')}`;
     const hot = edgeTouchesFocus(edge, focusId);
     const dimmed = focusId && !hot;
@@ -1437,11 +1657,13 @@ function drawFeatureNetwork(shell, { features, edges, positions, width, height, 
     path.setAttribute('class', `feature-graph-link ${cls}${dimmed ? ' is-dimmed' : ''}${hot ? ' is-hot' : ''}`);
     path.dataset.from = edge.from;
     path.dataset.to = edge.to;
+    path.dataset.edgeType = edge.type;
     if (edge.directed !== false) path.setAttribute('marker-end', 'url(#feature-graph-arrow)');
     edgeLayer.appendChild(path);
 
+    if (!hot) continue;
     const label = document.createElementNS(svgNs, 'text');
-    label.setAttribute('class', `feature-graph-edge-label${hot ? ' is-visible' : ''}`);
+    label.setAttribute('class', 'feature-graph-edge-label is-visible');
     label.setAttribute('x', String(cx));
     label.setAttribute('y', String(cy - 6));
     label.setAttribute('text-anchor', 'middle');
@@ -1511,6 +1733,7 @@ function drawFeatureNetwork(shell, { features, edges, positions, width, height, 
     nodeLayer.appendChild(group);
   }
   viewport.appendChild(nodeLayer);
+  viewport.appendChild(clusterLabelLayer);
   svg.appendChild(viewport);
   shell.innerHTML = '';
   shell.appendChild(svg);
@@ -1563,11 +1786,12 @@ function renderFeatureGraph() {
   const root = document.getElementById('featureGraph');
   if (!root) return;
 
-  renderGraphLegend();
   const features = applySearch(getAllFeatures());
+  renderGraphLegend('graphLegend', features);
   const visibleIds = new Set(features.map((f) => f.featureId));
   const allEdges = (state.graph && state.graph.edges) || [];
-  const edges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
+  const edges = visibleGraphEdges(allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to)));
+  const layoutEdges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
   if (graphHoveredFeatureId && !visibleIds.has(graphHoveredFeatureId)) {
     graphHoveredFeatureId = null;
   }
@@ -1575,10 +1799,10 @@ function renderFeatureGraph() {
 
   const width = Math.max(320, root.clientWidth || 960);
   const height = Math.max(280, root.clientHeight || 560);
-  const layoutKey = `${[...visibleIds].sort().join(',')}|${Math.round(width / 40)}x${Math.round(height / 40)}`;
+  const layoutKey = `${[...visibleIds].sort().join(',')}|${Math.round(width / 40)}x${Math.round(height / 40)}|c${((state.graph && state.graph.clusters) || []).length}`;
   let positions = graphRenderCache.positions;
   if (graphRenderCache.layoutKey !== layoutKey) {
-    positions = layoutFeatureNetwork(features, edges, width, height);
+    positions = layoutFeatureNetwork(features, layoutEdges, width, height);
     graphRenderCache.layoutKey = layoutKey;
     resetGraphViewport();
   }
@@ -1617,19 +1841,38 @@ function layoutFeatureNetwork3d(features, edges) {
   const spread = Math.min(440, 200 + (Math.sqrt(Math.max(1, count)) * 26));
   const heightSpread = spread * 0.8;
   const springScale = spread / 210;
+  const clusters = groupFeaturesByCategory(features);
+  const catCount = Math.max(1, clusters.length);
+  const categoryCenter = new Map();
+  clusters.forEach((cluster, index) => {
+    const angle = ((2 * Math.PI * index) / catCount) - (Math.PI / 2);
+    const orbit = spread * (catCount <= 2 ? 0.35 : 0.62);
+    categoryCenter.set(cluster.title, {
+      x: Math.cos(angle) * orbit,
+      y: ((index % 3) - 1) * heightSpread * 0.18,
+      z: Math.sin(angle) * orbit,
+    });
+  });
+
   const nodes = features.map((feature, index) => {
+    const cat = (feature.categoryTitle || '').trim() || 'Uncategorized';
+    const center = categoryCenter.get(cat) || { x: 0, y: 0, z: 0 };
+    const members = (clusters.find((c) => c.title === cat) || { memberIds: [feature.featureId] }).memberIds;
+    const localIndex = Math.max(0, members.indexOf(feature.featureId));
     const golden = Math.PI * (3 - Math.sqrt(5));
-    const y = count === 1 ? 0 : 1 - ((index / (count - 1)) * 2);
+    const y = members.length === 1 ? 0 : 1 - ((localIndex / Math.max(1, members.length - 1)) * 2);
     const radius = Math.sqrt(Math.max(0, 1 - (y * y)));
-    const theta = golden * index;
+    const theta = golden * localIndex;
+    const localSpread = 55 + Math.min(90, members.length * 8);
     return {
       id: feature.featureId,
       feature,
+      category: cat,
       tone: graphNodeTone(feature),
       radius: Math.min(16, 6 + graphNodeDegree(feature.featureId, edges) * 1.15),
-      x: Math.cos(theta) * radius * spread,
-      y: y * heightSpread,
-      z: Math.sin(theta) * radius * spread,
+      x: center.x + Math.cos(theta) * radius * localSpread,
+      y: center.y + (y * localSpread * 0.55),
+      z: center.z + Math.sin(theta) * radius * localSpread,
       vx: 0,
       vy: 0,
       vz: 0,
@@ -1654,7 +1897,7 @@ function layoutFeatureNetwork3d(features, edges) {
         let dz = nodes[j].z - nodes[i].z;
         const distSq = (dx * dx) + (dy * dy) + (dz * dz) || 1;
         const dist = Math.sqrt(distSq);
-        const force = (3800 * springScale) / distSq;
+        const force = (5200 * springScale) / distSq;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         const fz = (dz / dist) * force;
@@ -1683,9 +1926,10 @@ function layoutFeatureNetwork3d(features, edges) {
       spring.b.vz -= fz;
     }
     for (const node of nodes) {
-      node.vx -= node.x * 0.008;
-      node.vy -= node.y * 0.008;
-      node.vz -= node.z * 0.008;
+      const home = categoryCenter.get(node.category) || { x: 0, y: 0, z: 0 };
+      node.vx += (home.x - node.x) * 0.03;
+      node.vy += (home.y - node.y) * 0.03;
+      node.vz += (home.z - node.z) * 0.03;
       node.vx *= cool;
       node.vy *= cool;
       node.vz *= cool;
@@ -1882,6 +2126,7 @@ function graph3dRelationsFor(focusId) {
   const byNeighbor = new Map();
   if (!focusId) return byNeighbor;
   for (const edge of graph3d.edges) {
+    if (!isLabeledGraphEdge(edge.type)) continue;
     let other = null;
     if (edge.from === focusId) other = edge.to;
     else if (edge.to === focusId) other = edge.from;
@@ -1920,7 +2165,7 @@ function updateGraph3dInspect() {
           <span class="graph-3d-inspect-rel-title">${escapeHtml(truncateGraphTitle(item.title, 36))}</span>
         </li>
       `).join('')
-    : '<li class="is-empty">No parsed links — this feature is isolated here.</li>';
+    : '<li class="is-empty">No depends-on / blocked-by / plan links yet. Category grouping is the colored region around this node.</li>';
   card.hidden = false;
   card.innerHTML = `
     <p class="graph-3d-inspect-kicker">Selected</p>
@@ -2158,6 +2403,61 @@ function drawGraph3dFrame(ts) {
   ctx.restore();
 
   const projected = graph3dProjectedNodes(width, height);
+  const clusters = groupFeaturesByCategory(graph3d.features || []);
+  clusters.forEach((cluster, index) => {
+    const pts = projected
+      .filter((item) => cluster.memberIds.includes(item.node.id))
+      .map((item) => ({ x: item.proj.x, y: item.proj.y, depth: item.proj.depth }));
+    if (pts.length < 2) return;
+    const hull = expandHull(convexHullPoints(pts), 26);
+    if (hull.length < 3) return;
+    ctx.beginPath();
+    hull.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = clusterFillColor(index);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(139, 148, 158, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    let lx = 0;
+    let ly = Infinity;
+    for (const p of pts) {
+      lx += p.x;
+      if (p.y < ly) ly = p.y;
+    }
+    lx /= pts.length;
+    const label = shortCategoryLabel(cluster.title);
+    ctx.font = '650 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    const labelY = ly - 16;
+    const bx = lx - (tw / 2) - 6;
+    const by = labelY - 9;
+    const bw = tw + 12;
+    const bh = 18;
+    ctx.fillStyle = 'rgba(13, 17, 23, 0.88)';
+    ctx.strokeStyle = clusterStrokeColor(index);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(bx + 4, by);
+    ctx.lineTo(bx + bw - 4, by);
+    ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + 4);
+    ctx.lineTo(bx + bw, by + bh - 4);
+    ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - 4, by + bh);
+    ctx.lineTo(bx + 4, by + bh);
+    ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - 4);
+    ctx.lineTo(bx, by + 4);
+    ctx.quadraticCurveTo(bx, by, bx + 4, by);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e6edf3';
+    ctx.fillText(label, lx, labelY);
+  });
   const byId = new Map(projected.map((item) => [item.node.id, item]));
   const focusId = graph3d.grabbedId || graph3d.hoverId;
   const relations = graph3dRelationsFor(focusId);
@@ -2166,6 +2466,7 @@ function drawGraph3dFrame(ts) {
   const pulse = 0.55 + (0.45 * Math.sin((ts || 0) * 0.005));
 
   for (const edge of graph3d.edges) {
+    if (!isLabeledGraphEdge(edge.type)) continue;
     const from = byId.get(edge.from);
     const to = byId.get(edge.to);
     if (!from || !to) continue;
@@ -2190,7 +2491,7 @@ function drawGraph3dFrame(ts) {
     ctx.globalAlpha = dim ? 0.05 : (hot ? 1 : 0.55);
     ctx.lineWidth = hot ? 2.6 : 1.05;
     ctx.lineCap = 'round';
-    if (!hot && (edge.type === 'same category' || edge.type === 'blocked by')) {
+    if (!hot && edge.type === 'blocked by') {
       ctx.setLineDash([4, 4]);
     } else {
       ctx.setLineDash([]);
@@ -2490,8 +2791,8 @@ function renderFeatureGraph3d() {
   const root = document.getElementById('featureGraph3d');
   if (!root) return;
 
-  renderGraphLegend('graphLegend');
   const features = applySearch(getAllFeatures());
+  renderGraphLegend('graphLegend', features);
   const visibleIds = new Set(features.map((f) => f.featureId));
   const allEdges = (state.graph && state.graph.edges) || [];
   const edges = allEdges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to));
@@ -2515,7 +2816,7 @@ function renderFeatureGraph3d() {
         ...node,
         feature,
         tone: graphNodeTone(feature),
-        radius: Math.min(16, 6 + graphNodeDegree(node.id, edges) * 1.15),
+        radius: Math.min(16, 6 + graphNodeDegree(node.id, visibleGraphEdges(edges)) * 1.15),
       };
     });
   }
@@ -3818,6 +4119,56 @@ async function load() {
   }
 }
 
+function closeGraphSuggestPanel() {
+  const panel = document.getElementById('graphSuggestPanel');
+  if (panel) panel.hidden = true;
+}
+
+async function openGraphSuggestPanel() {
+  const panel = document.getElementById('graphSuggestPanel');
+  const list = document.getElementById('graphSuggestList');
+  if (!panel || !list) return;
+  panel.hidden = false;
+  list.innerHTML = '<p class="graph-suggest-empty">Analyzing features…</p>';
+  try {
+    const res = await fetch('/api/graph/dependency-suggestions');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load suggestions');
+    const suggestions = data.suggestions || [];
+    if (!suggestions.length) {
+      list.innerHTML = '<p class="graph-suggest-empty">No new dependency suggestions. Add richer descriptions or plan Dependencies to improve matches.</p>';
+      return;
+    }
+    list.innerHTML = suggestions.map((item) => `
+      <div class="graph-suggest-item" data-from="${escapeHtml(item.from)}" data-to="${escapeHtml(item.to)}">
+        <div class="graph-suggest-main">
+          <p class="graph-suggest-link"><strong>${escapeHtml(item.from)}</strong> → <strong>${escapeHtml(item.to)}</strong></p>
+          <p class="graph-suggest-titles">${escapeHtml(item.fromTitle || '')} depends on ${escapeHtml(item.toTitle || '')}</p>
+          <p class="graph-suggest-reason">${escapeHtml(item.reason || '')}</p>
+        </div>
+        <button type="button" class="btn btn-primary graph-suggest-apply" data-from="${escapeHtml(item.from)}" data-to="${escapeHtml(item.to)}">Apply</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    list.innerHTML = `<p class="graph-suggest-empty">${escapeHtml(err.message || 'Failed to load suggestions')}</p>`;
+  }
+}
+
+async function applyGraphDependency(fromId, toId) {
+  const res = await fetch(`/api/features/${encodeURIComponent(fromId)}/dependencies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetId: toId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to apply dependency');
+  if (data.categories) state.categories = data.categories;
+  if (data.graph) state.graph = data.graph;
+  renderMainView();
+  toast(`Added Depends on ${toId} to ${fromId}`);
+  openGraphSuggestPanel().catch(() => {});
+}
+
 async function addCategory() {
   const name = (window.prompt('New category name (e.g. "🧪 Quality & Testing")') || '').trim();
   if (!name) return;
@@ -3888,6 +4239,18 @@ document.getElementById('viewProcess')?.addEventListener('click', () => setMainV
 document.getElementById('viewGraph')?.addEventListener('click', () => setMainView('graph'));
 document.getElementById('graphMode2d')?.addEventListener('click', () => setGraphMode('2d'));
 document.getElementById('graphMode3d')?.addEventListener('click', () => setGraphMode('3d'));
+document.getElementById('suggestGraphDeps')?.addEventListener('click', () => {
+  openGraphSuggestPanel().catch((err) => toast(err.message || 'Failed to suggest links', 'error'));
+});
+document.getElementById('closeGraphSuggest')?.addEventListener('click', closeGraphSuggestPanel);
+document.getElementById('graphSuggestList')?.addEventListener('click', (event) => {
+  const button = event.target.closest('.graph-suggest-apply');
+  if (!button) return;
+  const from = button.getAttribute('data-from');
+  const to = button.getAttribute('data-to');
+  if (!from || !to) return;
+  applyGraphDependency(from, to).catch((err) => toast(err.message || 'Failed to apply dependency', 'error'));
+});
 document.getElementById('openSettings').addEventListener('click', () => openSettings());
 document.getElementById('closeSettings').addEventListener('click', closeSettings);
 document.getElementById('openGithubSettingsFromShip').addEventListener('click', openGithubSettings);

@@ -1,21 +1,21 @@
 /**
- * Feature relationship graph (CORE-017).
+ * Feature relationship graph (CORE-017 / CORE-028).
  *
  * Relation sources (v1 — no structured Depends column yet):
  * - **depends on:** Registry Notes matching "Depends on …" (feature IDs), or plan ## Dependencies
  *   lines with "Prerequisite:" / "Depends on" (IDs only if target is in the loaded feature set).
  * - **blocked by:** Status contains Blocked and Notes/plan Dependencies name another tracked ID.
  * - **same category:** Pairwise links only when a category has at most SAME_CATEGORY_MAX members
- *   (avoids a complete mesh on large tables).
+ *   (avoids a complete mesh on large tables). Larger categories are shown as visual clusters (CORE-028).
  * - **plan link:** Notes or plan file text reference another feature's plan/tasks path by ID pattern.
  *
- * Feature IDs: conservative `\b(CORE|AGENT)-\d{3}\b`. References outside the current set are ignored.
+ * Feature IDs: `\b([A-Z]{2,8})-\d{3}\b` (CORE, AGENT, QF, …). References outside the current set are ignored.
  * Does not infer edges from source code or git history.
  */
 
 import { resolveArtifactPaths, readIfExists } from './artifacts.js';
 
-export const FEATURE_ID_PATTERN = /\b(CORE|AGENT)-\d{3}\b/gi;
+export const FEATURE_ID_PATTERN = /\b([A-Z]{2,8})-\d{3}\b/gi;
 export const SAME_CATEGORY_MAX = 4;
 
 export const EDGE_DEPENDS_ON = 'depends on';
@@ -44,8 +44,8 @@ export function extractFeatureIds(text, { excludeId } = {}) {
   return ids;
 }
 
-function normalizeFeatureId(raw) {
-  const m = String(raw || '').trim().match(/^(CORE|AGENT)-(\d+)$/i);
+export function normalizeFeatureId(raw) {
+  const m = String(raw || '').trim().match(/^([A-Z]{2,8})-(\d+)$/i);
   if (!m) return null;
   return `${m[1].toUpperCase()}-${String(m[2]).padStart(3, '0')}`;
 }
@@ -120,6 +120,25 @@ function addEdge(edgeMap, edge) {
   const key = edge.id || edgeId(edge.type, edge.from, edge.to);
   if (edgeMap.has(key)) return;
   edgeMap.set(key, { ...edge, id: key });
+}
+
+function categoryGroups(featureById, idSet) {
+  const byCategory = new Map();
+  for (const id of idSet) {
+    const cat = (featureById.get(id)?.categoryTitle || '').trim() || 'Uncategorized';
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat).push(id);
+  }
+  return byCategory;
+}
+
+function buildClusters(byCategory) {
+  return [...byCategory.entries()]
+    .map(([title, memberIds]) => ({
+      title,
+      memberIds: [...memberIds].sort(),
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
 }
 
 /**
@@ -200,12 +219,7 @@ export function buildFeatureGraph(features, options = {}) {
     }
   }
 
-  const byCategory = new Map();
-  for (const id of idSet) {
-    const cat = (featureById.get(id)?.categoryTitle || '').trim() || 'Uncategorized';
-    if (!byCategory.has(cat)) byCategory.set(cat, []);
-    byCategory.get(cat).push(id);
-  }
+  const byCategory = categoryGroups(featureById, idSet);
   for (const members of byCategory.values()) {
     if (members.length > SAME_CATEGORY_MAX) continue;
     const sorted = [...members].sort();
@@ -227,7 +241,145 @@ export function buildFeatureGraph(features, options = {}) {
   return {
     nodes,
     edges: [...edgeMap.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    clusters: buildClusters(byCategory),
   };
+}
+
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'from', 'by',
+  'is', 'are', 'as', 'at', 'be', 'into', 'via', 'that', 'this', 'it', 'its', 'app',
+]);
+
+function tokenizeFeatureText(...parts) {
+  const text = parts.filter(Boolean).join(' ').toLowerCase();
+  const tokens = text.match(/[a-z][a-z0-9+]{2,}/g) || [];
+  return new Set(tokens.filter((t) => !STOP_WORDS.has(t)));
+}
+
+function existingDependsPairs(features, planContentsById) {
+  const pairs = new Set();
+  for (const f of features || []) {
+    const id = normalizeFeatureId(f.featureId);
+    if (!id) continue;
+    const planText = planContentsById[id] || '';
+    const planDeps = extractPlanDependenciesSection(planText);
+    for (const target of [
+      ...extractDependsOnFromNotes(f.notes, id),
+      ...planDeps.prerequisiteIds,
+    ]) {
+      pairs.add(`${id}->${target}`);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Conservative dependency suggestions for human review (CORE-028).
+ * @returns {Array<{ from: string, to: string, reason: string, score: number }>}
+ */
+export function suggestFeatureDependencies(features, options = {}) {
+  const planContentsById = options.planContentsById || {};
+  const list = (features || [])
+    .map((f) => ({ ...f, featureId: normalizeFeatureId(f.featureId) }))
+    .filter((f) => f.featureId);
+  const idSet = new Set(list.map((f) => f.featureId));
+  const existing = existingDependsPairs(list, planContentsById);
+  const suggestions = new Map();
+
+  const add = (from, to, reason, score) => {
+    if (!from || !to || from === to) return;
+    if (!idSet.has(from) || !idSet.has(to)) return;
+    if (existing.has(`${from}->${to}`)) return;
+    const key = `${from}->${to}`;
+    const prev = suggestions.get(key);
+    if (prev && prev.score >= score) return;
+    suggestions.set(key, { from, to, reason, score });
+  };
+
+  const byId = new Map(list.map((f) => [f.featureId, f]));
+  const tokensById = new Map();
+  for (const f of list) {
+    tokensById.set(
+      f.featureId,
+      tokenizeFeatureText(f.title, f.description, planContentsById[f.featureId]),
+    );
+  }
+
+  for (const f of list) {
+    const blob = [f.title, f.description, f.notes, f.planDocument, planContentsById[f.featureId]]
+      .filter(Boolean)
+      .join('\n');
+    for (const mentioned of extractFeatureIds(blob, { excludeId: f.featureId })) {
+      add(f.featureId, mentioned, 'Mentioned in title, description, notes, or plan', 0.92);
+    }
+  }
+
+  for (const f of list) {
+    const mine = tokensById.get(f.featureId) || new Set();
+    if (mine.size < 2) continue;
+    for (const other of list) {
+      if (other.featureId <= f.featureId) continue;
+      const theirs = tokensById.get(other.featureId) || new Set();
+      let overlap = 0;
+      const shared = [];
+      for (const token of mine) {
+        if (theirs.has(token)) {
+          overlap += 1;
+          if (shared.length < 4) shared.push(token);
+        }
+      }
+      if (overlap < 2) continue;
+      const titleHit = [...tokenizeFeatureText(other.title)].some((t) => mine.has(t) && t.length > 4)
+        || [...tokenizeFeatureText(f.title)].some((t) => theirs.has(t) && t.length > 4);
+      if (!titleHit && overlap < 3) continue;
+      const score = Math.min(0.85, 0.45 + (overlap * 0.1) + (titleHit ? 0.12 : 0));
+      add(
+        other.featureId,
+        f.featureId,
+        `Shared themes: ${shared.join(', ')}`,
+        score,
+      );
+    }
+  }
+
+  const byCategory = categoryGroups(byId, idSet);
+  for (const members of byCategory.values()) {
+    const sorted = [...members].sort();
+    if (sorted.length < 2) continue;
+    const foundation = sorted[0];
+    for (let i = 1; i < sorted.length; i += 1) {
+      add(
+        sorted[i],
+        foundation,
+        `Earlier feature in the same category (${shortCategory(byId.get(foundation)?.categoryTitle)})`,
+        0.42,
+      );
+    }
+  }
+
+  return [...suggestions.values()]
+    .sort((a, b) => b.score - a.score || a.from.localeCompare(b.from))
+    .slice(0, 40);
+}
+
+function shortCategory(title) {
+  return String(title || 'category').replace(/^[\s\p{Extended_Pictographic}\uFE0F]+/u, '').trim() || 'category';
+}
+
+export function appendDependsOnNote(notes, targetId) {
+  const id = normalizeFeatureId(targetId);
+  if (!id) throw new Error('Invalid dependency feature id');
+  const current = String(notes || '').trim();
+  if (extractDependsOnFromNotes(current, null).includes(id)) return current || '-';
+  if (!current || current === '-') return `Depends on ${id}`;
+  if (/depends\s+on\s+/i.test(current)) {
+    return current.replace(/depends\s+on\s+([^.;\n]+)/i, (full, list) => {
+      const ids = extractFeatureIds(list);
+      if (ids.includes(id)) return full;
+      return `Depends on ${[...ids, id].join(', ')}`;
+    });
+  }
+  return `${current.replace(/\s+$/, '')}. Depends on ${id}`;
 }
 
 export function loadPlanContentsForFeatures(specRoot, features) {

@@ -1650,11 +1650,31 @@ body {
 .graph-legend {
   flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.9rem;
+  flex-direction: column;
+  gap: 0.35rem;
   margin: 0 0 0.65rem;
   font-size: 0.72rem;
   color: var(--text-muted);
+}
+
+.graph-legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  align-items: center;
+}
+
+.graph-legend-kicker {
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b949e;
+  margin-right: 0.25rem;
+}
+
+.graph-legend-categories {
+  padding-top: 0.15rem;
+  border-top: 1px solid rgba(110, 118, 129, 0.25);
 }
 
 .graph-legend-item {
@@ -1683,10 +1703,98 @@ body {
   background: var(--wip);
 }
 
+.graph-legend-swatch.edge-category-cluster {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  background: rgba(88, 166, 255, 0.22);
+  border: 1px solid rgba(88, 166, 255, 0.45);
+}
+
 .graph-legend-swatch.is-same-category {
   border-top: 2px dashed var(--text-muted);
   height: 0;
   width: 1.5rem;
+}
+
+.graph-suggest {
+  margin: 0 0 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(88, 166, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.92);
+}
+
+.graph-suggest[hidden] {
+  display: none !important;
+}
+
+.graph-suggest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.graph-suggest-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.graph-suggest-hint,
+.graph-suggest-empty {
+  margin: 0.35rem 0 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.graph-suggest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.graph-suggest-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid rgba(110, 118, 129, 0.35);
+  border-radius: 8px;
+  background: rgba(22, 27, 34, 0.9);
+}
+
+.graph-suggest-link {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.graph-suggest-titles,
+.graph-suggest-reason {
+  margin: 0.15rem 0 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.graph-suggest-apply {
+  flex-shrink: 0;
+}
+
+.feature-graph-cluster {
+  stroke: rgba(139, 148, 158, 0.35);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.feature-graph-cluster-label {
+  fill: #c9d1d9;
+  font-size: 11px;
+  font-weight: 650;
+  pointer-events: none;
 }
 
 .feature-graph {
