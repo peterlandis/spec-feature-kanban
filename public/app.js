@@ -665,6 +665,7 @@ async function refreshCursorModels({ silent } = {}) {
       cursorModelsError: body.error || body.cursorModelsError || '',
     });
     renderCursorSettingsStatus();
+    if (typeof renderBoardPhase === 'function') renderBoardPhase();
     if (!res.ok) {
       throw new Error(body.error || 'Failed to refresh Cursor models');
     }
@@ -889,15 +890,37 @@ function isAlternateMainViewActive() {
   return false;
 }
 
+function phaseIsActivelyRunning() {
+  const phase = boardPhaseState && boardPhaseState.phase;
+  const runner = boardPhaseState && boardPhaseState.runner;
+  return Boolean((phase && phase.status === 'running') || (runner && runner.running));
+}
+
 function syncLiveViewPolling(anyLive) {
-  const shouldPoll = !!anyLive && isAlternateMainViewActive();
+  const onProcess = uiState.mainView === 'process' && isAlternateMainViewActive();
+  const shouldPoll = isAlternateMainViewActive() && (!!anyLive || (onProcess && phaseIsActivelyRunning()));
   if (shouldPoll && !processPollTimer) {
     processPollTimer = setInterval(() => {
       if (!isAlternateMainViewActive()) return;
-      load().catch(() => {});
+      if (uiState.mainView === 'process') {
+        refreshProcessFleet().catch(() => {});
+      } else {
+        load().catch(() => {});
+      }
     }, 1000);
   }
   if (!shouldPoll) stopProcessPolling();
+}
+
+async function refreshProcessFleet() {
+  const data = await fetchFeatures();
+  if (data.categories) state.categories = data.categories;
+  if (data.graph) state.graph = data.graph;
+  if ('preamble' in data) state.preamble = data.preamble;
+  if ('postamble' in data) state.postamble = data.postamble;
+  if (uiState.mainView === 'process') {
+    renderProcess();
+  }
 }
 
 function syncViewToggleButtons() {
@@ -1032,22 +1055,36 @@ function renderMainView() {
   }
 }
 
+function phaseFeatureIdSet() {
+  const items = (boardPhaseState && boardPhaseState.phase && boardPhaseState.phase.items) || [];
+  return new Set(items.map((item) => item.featureId).filter(Boolean));
+}
+
 function renderProcessOccupant(feature) {
   const live = feature.runStatus === 'starting' || feature.runStatus === 'running';
   const waiting = !!feature.waitingOnHuman && !live;
+  const phaseIds = phaseFeatureIdSet();
+  const inPhase = phaseIds.has(feature.featureId);
+  const currentPhase = boardPhaseState
+    && boardPhaseState.phase
+    && boardPhaseState.phase.currentFeatureId === feature.featureId;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'process-occupant';
+  btn.dataset.featureId = feature.featureId;
   if (live) btn.classList.add('is-live');
   if (waiting) btn.classList.add('is-waiting');
+  if (inPhase) btn.classList.add('is-phase');
+  if (currentPhase) btn.classList.add('is-phase-current');
   const badge = live
     ? '<span class="process-run-badge" aria-hidden="true">Run</span>'
-    : '';
+    : (currentPhase ? '<span class="process-run-badge process-phase-badge" aria-hidden="true">Phase</span>' : '');
   const activity = feature.activityLine
     ? `<span class="process-activity">${escapeHtml(feature.activityLine)}</span>`
     : '';
   const sr = live ? 'Live agent. ' : (waiting ? 'Waiting on human. ' : '');
-  btn.setAttribute('aria-label', `${sr}${feature.featureId}: ${feature.title || feature.featureId}`);
+  const phaseSr = inPhase ? 'In active phase. ' : '';
+  btn.setAttribute('aria-label', `${sr}${phaseSr}${feature.featureId}: ${feature.title || feature.featureId}`);
   btn.innerHTML = `
     <span class="process-occupant-top">
       <span class="process-occupant-id">${escapeHtml(feature.featureId)}</span>
@@ -1066,16 +1103,19 @@ function buildProcessStageNode(stage, occupants) {
   const count = occupants.length;
   const stageLive = occupants.some((f) => f.runStatus === 'starting' || f.runStatus === 'running');
   const stageWaiting = occupants.some((f) => f.waitingOnHuman && f.runStatus !== 'starting' && f.runStatus !== 'running');
+  const stagePhase = occupants.some((f) => phaseFeatureIdSet().has(f.featureId));
 
   const node = document.createElement('div');
   node.className = 'process-stage';
   node.dataset.stage = stage.id;
   if (stageLive) node.classList.add('is-live');
   if (stageWaiting && !stageLive) node.classList.add('is-waiting');
+  if (stagePhase) node.classList.add('is-phase');
 
   let ariaExtra = '';
   if (stageLive) ariaExtra += ', live agent';
   if (stageWaiting) ariaExtra += ', waiting on human';
+  if (stagePhase) ariaExtra += ', phase feature';
   node.setAttribute(
     'aria-label',
     `${stage.label}, ${count} feature${count === 1 ? '' : 's'}${ariaExtra}`,
@@ -1111,6 +1151,103 @@ function buildProcessStageNode(stage, occupants) {
   return node;
 }
 
+function processOccupantAnchor(graphEl, featureId) {
+  const btn = Array.from(graphEl.querySelectorAll('.process-occupant'))
+    .find((el) => el.dataset.featureId === featureId);
+  if (!btn) return null;
+  const g = graphEl.getBoundingClientRect();
+  const b = btn.getBoundingClientRect();
+  return {
+    x: b.left - g.left + b.width / 2,
+    y: b.top - g.top + b.height / 2,
+    left: b.left - g.left,
+    right: b.right - g.left,
+    top: b.top - g.top,
+    bottom: b.bottom - g.top,
+  };
+}
+
+function drawProcessDependencyEdges(graphEl, features) {
+  if (!graphEl) return;
+  const old = graphEl.querySelector('svg.process-dep-layer');
+  if (old) old.remove();
+
+  const edges = ((state.graph && state.graph.edges) || []).filter((edge) => (
+    edge
+    && (edge.type === 'depends on' || edge.type === 'blocked by')
+    && edge.from
+    && edge.to
+  ));
+  if (!edges.length) return;
+
+  const visible = new Set((features || []).map((f) => f.featureId));
+  const phaseIds = phaseFeatureIdSet();
+  const width = Math.max(graphEl.scrollWidth, graphEl.clientWidth, 1);
+  const height = Math.max(graphEl.scrollHeight, graphEl.clientHeight, 1);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'process-dep-layer');
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('aria-hidden', 'true');
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  for (const [id, color] of [
+    ['processDepArrow', 'rgba(88, 166, 255, 0.85)'],
+    ['processDepArrowPhase', 'rgba(210, 153, 34, 0.95)'],
+    ['processBlockArrow', 'rgba(248, 81, 73, 0.8)'],
+  ]) {
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', id);
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '8');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '6');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('orient', 'auto');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+    path.setAttribute('fill', color);
+    marker.appendChild(path);
+    defs.appendChild(marker);
+  }
+  svg.appendChild(defs);
+
+  let drawn = 0;
+  for (const edge of edges) {
+    if (!visible.has(edge.from) || !visible.has(edge.to)) continue;
+    const a = processOccupantAnchor(graphEl, edge.from);
+    const b = processOccupantAnchor(graphEl, edge.to);
+    if (!a || !b) continue;
+    const inPhase = phaseIds.has(edge.from) || phaseIds.has(edge.to);
+    const isBlock = edge.type === 'blocked by';
+    // Leave from right-ish side toward target left-ish side when stages differ horizontally.
+    const x1 = a.x <= b.x ? a.right : a.left;
+    const y1 = a.y;
+    const x2 = a.x <= b.x ? b.left : b.right;
+    const y2 = b.y;
+    const dx = Math.max(40, Math.abs(x2 - x1) * 0.35);
+    const c1x = a.x <= b.x ? x1 + dx : x1 - dx;
+    const c2x = a.x <= b.x ? x2 - dx : x2 + dx;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`);
+    path.setAttribute('class', [
+      'process-dep-edge',
+      isBlock ? 'is-blocked' : 'is-depends',
+      inPhase ? 'is-phase' : '',
+    ].filter(Boolean).join(' '));
+    path.setAttribute(
+      'marker-end',
+      isBlock ? 'url(#processBlockArrow)' : (inPhase ? 'url(#processDepArrowPhase)' : 'url(#processDepArrow)'),
+    );
+    path.setAttribute('fill', 'none');
+    svg.appendChild(path);
+    drawn += 1;
+  }
+  if (!drawn) return;
+  graphEl.appendChild(svg);
+}
+
 function renderProcess() {
   const graph = document.getElementById('processGraph');
   if (!graph) return;
@@ -1127,6 +1264,7 @@ function renderProcess() {
   }
 
   graph.innerHTML = '';
+  graph.classList.add('has-dep-layer');
 
   const mainRow = document.createElement('div');
   mainRow.className = 'process-main-track';
@@ -1158,10 +1296,13 @@ function renderProcess() {
   const blockedLinks = document.createElement('p');
   blockedLinks.className = 'process-side-note';
   blockedLinks.setAttribute('aria-hidden', 'true');
-  blockedLinks.textContent = 'Blocked and Paused can be reached from active work (dashed paths in the plan topology).';
+  blockedLinks.textContent = 'Blue/gold curves are Depends-on; red are Blocked-by. Phase features are highlighted as they move across stages.';
 
   graph.append(mainRow, revise, sideRow, blockedLinks);
-  syncLiveViewPolling(anyFeatureLive(features));
+  requestAnimationFrame(() => {
+    drawProcessDependencyEdges(graph, features);
+  });
+  syncLiveViewPolling(anyFeatureLive(features) || phaseIsActivelyRunning());
 }
 
 function truncateGraphTitle(title, maxLen = 28) {
@@ -3436,13 +3577,132 @@ function focusGraphFeature(featureId) {
 }
 
 let boardPhasePollTimer = null;
-let boardPhaseState = { phase: null, runner: null };
+let boardPhaseState = { phase: null, runner: null, liveRun: null };
 
 function stopBoardPhasePolling() {
   if (boardPhasePollTimer) {
     clearInterval(boardPhasePollTimer);
     boardPhasePollTimer = null;
   }
+}
+
+function fillPhaseModelSelect(selectEl, selectedValue) {
+  if (!selectEl) return;
+  const models = configState.cursorModels || [];
+  const defaultId = configState.cursorModel || 'composer-2.5';
+  const preferred = String(selectedValue || '').trim();
+  const previous = selectEl.value;
+  const focused = document.activeElement === selectEl;
+  if (focused) return;
+  selectEl.innerHTML = '';
+  selectEl.appendChild(new Option(`Settings default (${defaultId})`, ''));
+  const ids = new Set();
+  for (const model of models) {
+    if (!model || !model.id || ids.has(model.id)) continue;
+    ids.add(model.id);
+    const label = model.displayName && model.displayName !== model.id
+      ? `${model.displayName} (${model.id})`
+      : model.id;
+    selectEl.appendChild(new Option(label, model.id));
+  }
+  if (preferred && !ids.has(preferred)) {
+    selectEl.appendChild(new Option(`${preferred} (saved)`, preferred));
+  }
+  const next = preferred || previous || '';
+  selectEl.value = next;
+  if (selectEl.value !== next) selectEl.value = '';
+}
+
+function readPhaseModelsFromUi() {
+  return {
+    plan: (document.getElementById('phaseModelPlan')?.value || '').trim(),
+    implement: (document.getElementById('phaseModelImplement')?.value || '').trim(),
+    review: (document.getElementById('phaseModelReview')?.value || '').trim(),
+  };
+}
+
+function syncPhaseModelSelects(phase, running) {
+  const models = (phase && phase.models) || {};
+  fillPhaseModelSelect(document.getElementById('phaseModelPlan'), models.plan);
+  fillPhaseModelSelect(document.getElementById('phaseModelImplement'), models.implement);
+  fillPhaseModelSelect(document.getElementById('phaseModelReview'), models.review);
+  for (const id of ['phaseModelPlan', 'phaseModelImplement', 'phaseModelReview']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !configState.cursorConfigured || !!running;
+  }
+}
+
+function renderPhaseLiveRun(liveRun, phase, runner) {
+  const panel = document.getElementById('boardPhaseLive');
+  const statusEl = document.getElementById('boardPhaseLiveStatus');
+  const metaEl = document.getElementById('boardPhaseLiveMeta');
+  const summaryEl = document.getElementById('boardPhaseLiveSummary');
+  const errorEl = document.getElementById('boardPhaseLiveError');
+  const listEl = document.getElementById('boardPhaseTranscript');
+  if (!panel || !statusEl || !listEl) return;
+
+  const running = (phase && phase.status === 'running') || (runner && runner.running);
+  if (!running && !(liveRun && liveRun.transcript && liveRun.transcript.length)) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  if (!liveRun) {
+    statusEl.textContent = running ? 'Waiting for agent…' : 'Idle';
+    if (metaEl) metaEl.textContent = '';
+    if (summaryEl) summaryEl.textContent = 'Live chain of thought appears here when the phase starts an agent.';
+    if (errorEl) {
+      errorEl.hidden = true;
+      errorEl.textContent = '';
+    }
+    listEl.innerHTML = '<li class="tx-empty">No transcript yet for the current feature.</li>';
+    return;
+  }
+
+  const kind = liveRun.kind ? `${liveRun.kind} · ` : '';
+  const status = liveRun.runStatus || 'idle';
+  statusEl.textContent = liveRun.lastError && status === 'error'
+    ? `${kind}error`
+    : (kind + status);
+  if (metaEl) {
+    metaEl.textContent = [
+      liveRun.featureId,
+      liveRun.step ? `step: ${liveRun.step}` : null,
+      liveRun.model ? `model: ${liveRun.model}` : null,
+    ].filter(Boolean).join(' · ');
+  }
+  if (summaryEl) {
+    summaryEl.textContent = liveRun.lastAssistantText
+      || 'The latest agent summary will appear here.';
+  }
+  if (errorEl) {
+    if (liveRun.lastError) {
+      errorEl.hidden = false;
+      errorEl.textContent = liveRun.lastError;
+    } else {
+      errorEl.hidden = true;
+      errorEl.textContent = '';
+    }
+  }
+
+  const lines = Array.isArray(liveRun.transcript) ? liveRun.transcript : [];
+  const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 48;
+  if (!lines.length && liveRun.lastError) {
+    listEl.innerHTML = `<li class="tx-error"><span class="tx-kind">Error</span>${escapeHtml(liveRun.lastError)}</li>`;
+    return;
+  }
+  if (!lines.length) {
+    listEl.innerHTML = '<li class="tx-empty">Agent started — waiting for thinking / tool events…</li>';
+    return;
+  }
+  listEl.innerHTML = lines.map((line) => {
+    const kindClass = 'tx-' + (line.kind || 'status');
+    const title = escapeHtml(line.title || line.kind || '');
+    const text = escapeHtml(line.text || '');
+    return `<li class="${kindClass}"><span class="tx-kind">${title}</span>${text}</li>`;
+  }).join('');
+  if (nearBottom) listEl.scrollTop = listEl.scrollHeight;
 }
 
 function renderBoardPhase() {
@@ -3465,12 +3725,15 @@ function renderBoardPhase() {
   if (!phase) {
     list.innerHTML = '';
     stopBoardPhasePolling();
+    renderPhaseLiveRun(null, null, runner);
     return;
   }
 
   if (modeSelect && phase.mode && document.activeElement !== modeSelect) {
     modeSelect.value = phase.mode === 'plan-implement' ? 'plan-implement' : 'plan';
   }
+  const running = phase.status === 'running' || runner.running;
+  syncPhaseModelSelects(phase, running);
   if (lead) {
     const done = (phase.items || []).filter((item) => item.status === 'done').length;
     const total = (phase.items || []).length;
@@ -3480,14 +3743,14 @@ function renderBoardPhase() {
         ? `${phase.title || 'Phase'} complete — review plan/tasks/reviews in each workspace.`
         : phase.status === 'failed' || phase.status === 'cancelled'
           ? `${phase.title || 'Phase'} ${phase.status}${phase.error ? `: ${phase.error}` : ''}`
-          : `${phase.title || 'Phase'} ready — choose mode, then Run phase.`;
+          : `${phase.title || 'Phase'} ready — choose models and mode, then Run phase.`;
   }
   if (runBtn) {
-    runBtn.disabled = phase.status === 'running' || runner.running;
+    runBtn.disabled = running;
     runBtn.textContent = phase.status === 'complete' ? 'Run again' : 'Run phase';
   }
   if (cancelBtn) {
-    cancelBtn.hidden = !(phase.status === 'running' || runner.running);
+    cancelBtn.hidden = !running;
   }
 
   list.innerHTML = (phase.items || []).map((item) => {
@@ -3512,11 +3775,13 @@ function renderBoardPhase() {
     `;
   }).join('') || '<p class="board-phase-empty">No features in this phase.</p>';
 
-  if (phase.status === 'running' || runner.running) {
+  renderPhaseLiveRun(boardPhaseState.liveRun, phase, runner);
+
+  if (running) {
     if (!boardPhasePollTimer) {
       boardPhasePollTimer = setInterval(() => {
         refreshBoardPhase().catch(() => {});
-      }, 2500);
+      }, 1000);
     }
   } else {
     stopBoardPhasePolling();
@@ -3532,13 +3797,19 @@ async function refreshBoardPhase() {
   }
   const data = await res.json();
   boardPhaseState.runner = data.runner || null;
+  boardPhaseState.liveRun = data.liveRun || null;
   boardPhaseState.phase = data.activePhase
     || (data.phases && data.phases[0])
     || boardPhaseState.phase;
-  // If we have a selected phase id in memory, prefer that object from list.
   if (boardPhaseState.phase && Array.isArray(data.phases)) {
     const match = data.phases.find((item) => item.id === boardPhaseState.phase.id);
     if (match) boardPhaseState.phase = match;
+  }
+  // Keep Process stage columns in sync as phase features change status/workflow.
+  try {
+    await refreshProcessFleet();
+  } catch {
+    // Phase UI still updates even if fleet refresh fails.
   }
   renderBoardPhase();
 }
@@ -3546,14 +3817,16 @@ async function refreshBoardPhase() {
 async function buildPhaseFromFocus() {
   const modeSelect = document.getElementById('boardPhaseMode');
   const mode = modeSelect && modeSelect.value === 'plan-implement' ? 'plan-implement' : 'plan';
+  const models = readPhaseModelsFromUi();
   const res = await fetch(`${API}/phases`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fromFocus: true, limit: 4, mode }),
+    body: JSON.stringify({ fromFocus: true, limit: 4, mode, models }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Failed to build phase');
   boardPhaseState.phase = data.phase;
+  boardPhaseState.liveRun = null;
   renderBoardPhase();
   toast(`Phase ready with ${(data.phase.items || []).length} features`);
 }
@@ -3563,6 +3836,7 @@ async function runBoardPhase() {
   if (!phase) throw new Error('Build a phase first.');
   const modeSelect = document.getElementById('boardPhaseMode');
   const mode = modeSelect && modeSelect.value === 'plan-implement' ? 'plan-implement' : 'plan';
+  const models = readPhaseModelsFromUi();
   const label = mode === 'plan-implement'
     ? 'Run this phase overnight? Plans will be auto-approved, then each feature will be implemented. You will review artifacts in the morning.'
     : 'Run this phase overnight? Each feature will be planned and left in PlanReview for morning review.';
@@ -3570,14 +3844,14 @@ async function runBoardPhase() {
   const res = await fetch(`${API}/phases/${encodeURIComponent(phase.id)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmed: true, mode }),
+    body: JSON.stringify({ confirmed: true, mode, models }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Failed to start phase');
   boardPhaseState.phase = data.phase || phase;
   boardPhaseState.runner = data.runner || { running: true };
   renderBoardPhase();
-  toast('Phase started — leave this tab open or keep the server running');
+  toast('Phase started — live agent activity is below');
   refreshBoardPhase().catch(() => {});
 }
 

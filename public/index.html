@@ -67,7 +67,31 @@
             <button type="button" class="btn btn-secondary" id="cancelBoardPhase" hidden>Cancel</button>
           </div>
         </div>
+        <div class="board-phase-models" id="boardPhaseModels" aria-label="Stage Cursor models">
+          <label class="board-phase-model">
+            <span>Plan / tasks model</span>
+            <select id="phaseModelPlan" class="select" title="Cursor model for planning and tasks"></select>
+          </label>
+          <label class="board-phase-model">
+            <span>Implement model</span>
+            <select id="phaseModelImplement" class="select" title="Cursor model for implementation"></select>
+          </label>
+          <label class="board-phase-model">
+            <span>Security / review model</span>
+            <select id="phaseModelReview" class="select" title="Preferred model for security review (stored for review agents)"></select>
+          </label>
+        </div>
         <div class="board-phase-list" id="boardPhaseList"></div>
+        <div class="board-phase-live agent-live" id="boardPhaseLive" hidden>
+          <div class="agent-live-head">
+            <strong>Phase agent activity</strong>
+            <span id="boardPhaseLiveStatus">Idle</span>
+          </div>
+          <p class="board-phase-live-meta" id="boardPhaseLiveMeta"></p>
+          <p class="board-phase-live-summary" id="boardPhaseLiveSummary"></p>
+          <p class="run-error" id="boardPhaseLiveError" hidden></p>
+          <ol class="agent-transcript" id="boardPhaseTranscript"></ol>
+        </div>
       </section>
       <div class="process-graph" id="processGraph" role="region" aria-label="Workflow process graph"></div>
     </div>
