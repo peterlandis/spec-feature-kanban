@@ -14,7 +14,7 @@ let state = {
 
 let uiState = {
   mainView: 'board',
-  graphMode: '2d',
+  graphMode: (typeof localStorage !== 'undefined' && localStorage.getItem('graphMode') === '2d') ? '2d' : '3d',
   searchQuery: '',
   workspaceFeatureId: null,
   workspaceTab: 'plan',
@@ -902,6 +902,9 @@ function syncGraphModeButtons() {
 
 function setGraphMode(mode) {
   uiState.graphMode = mode === '3d' ? '3d' : '2d';
+  try {
+    localStorage.setItem('graphMode', uiState.graphMode);
+  } catch (_) { /* ignore */ }
   if (uiState.graphMode !== '3d') stopGraph3dLoop();
   if (uiState.mainView === 'graph') renderGraphPage();
 }
@@ -1121,6 +1124,12 @@ function truncateGraphTitle(title, maxLen = 28) {
   const t = String(title || '').trim();
   if (t.length <= maxLen) return t;
   return `${t.slice(0, maxLen - 1)}…`;
+}
+
+function graph3dFeatureCaption(feature, maxLen = 28) {
+  const title = String((feature && feature.title) || '').trim();
+  const description = String((feature && feature.description) || '').trim();
+  return truncateGraphTitle(title || description, maxLen);
 }
 
 function shortCategoryLabel(categoryTitle) {
@@ -1744,7 +1753,7 @@ function graph3dBoxesOverlap(a, b) {
 function graph3dLabelBox(item, kind) {
   const r = Math.max(4.5, item.node.radius * item.proj.scale);
   const text = kind === 'title'
-    ? truncateGraphTitle(item.node.feature.title, 24)
+    ? graph3dFeatureCaption(item.node.feature, 24)
     : item.node.id;
   const w = Math.max(40, String(text || '').length * 6.6);
   const h = 13;
@@ -1775,17 +1784,21 @@ function graph3dLabelPlan(projected, focusId, neighborIds) {
     neighborIds.forEach((id) => {
       showId.add(id);
       tryAdd(id, 'id');
+      if (tryAdd(id, 'title')) showTitle.add(id);
     });
     return { showId, showTitle };
   }
 
   const nearest = [...projected].sort((a, b) => a.proj.depth - b.proj.depth);
-  const maxIds = Math.min(12, Math.max(5, Math.ceil(nearest.length / 7)));
+  const maxIds = Math.min(14, Math.max(6, Math.ceil(nearest.length / 6)));
   let added = 0;
   for (const item of nearest) {
     if (item.proj.scale < 0.4) continue;
-    if (!tryAdd(item.node.id, 'id')) continue;
-    showId.add(item.node.id);
+    const idOk = tryAdd(item.node.id, 'id');
+    const titleOk = tryAdd(item.node.id, 'title');
+    if (!idOk && !titleOk) continue;
+    if (idOk) showId.add(item.node.id);
+    if (titleOk) showTitle.add(item.node.id);
     added += 1;
     if (added >= maxIds) break;
   }
@@ -2084,7 +2097,7 @@ function drawGraph3dFrame(ts) {
       ctx.font = `${isFocus ? 600 : 400} ${Math.max(8, (isFocus ? 11 : 9.5) * proj.scale)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(truncateGraphTitle(node.feature.title, isFocus ? 34 : 24), proj.x, proj.y + r + 6);
+      ctx.fillText(graph3dFeatureCaption(node.feature, isFocus ? 34 : 24), proj.x, proj.y + r + 6);
     }
     ctx.globalAlpha = 1;
   };
