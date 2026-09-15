@@ -31,16 +31,44 @@
   function currentVoiceId() {
     if (voiceSelect && voiceSelect.value) return voiceSelect.value;
     const fromConfig = window.jarvisVoiceConfig && window.jarvisVoiceConfig.voiceId;
-    return localStorage.getItem(STORAGE_VOICE_ID) || fromConfig || 'local:daniel';
+    if (fromConfig) return fromConfig;
+    return localStorage.getItem(STORAGE_VOICE_ID) || 'local:daniel';
   }
+
   let listening = false;
   let recognition = null;
   let pendingConfirm = null;
   let currentAudio = null;
   let cachedBrowserVoice = null;
   let speakGeneration = 0;
+  let audioUnlocked = false;
   const thread = [];
   const PREVIEW_LINE = 'At your service. All systems are online. How may I assist you?';
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    try {
+      const unlock = new Audio(SILENT_WAV);
+      unlock.volume = 0.01;
+      unlock.play().then(() => {
+        try { unlock.pause(); } catch (_) { /* ignore */ }
+      }).catch(() => {
+        audioUnlocked = false;
+      });
+    } catch (_) {
+      audioUnlocked = false;
+    }
+    if (window.speechSynthesis) {
+      try {
+        const utterance = new SpeechSynthesisUtterance(' ');
+        utterance.volume = 0;
+        window.speechSynthesis.speak(utterance);
+        window.speechSynthesis.cancel();
+      } catch (_) { /* ignore */ }
+    }
+  }
 
   function toJarvisSpeech(text) {
     let spoken = String(text || '').replace(/\[\[.*?\]\]/g, ' ').trim();
@@ -187,23 +215,43 @@
             setState('Idle — click the orb to talk, or type below.', 'idle');
             return;
           }
-          speakBrowser(spoken);
+          if (String(voiceId).startsWith('browser:')) speakBrowser(spoken);
+          else setState('Could not play this voice. Try Preview in Settings → Jarvis.', 'idle');
         };
         try {
           await currentAudio.play();
           return;
         } catch (_) {
-          releaseAudio(url);
+          unlockAudio();
+          try {
+            await currentAudio.play();
+            return;
+          } catch (__) {
+            releaseAudio(url);
+          }
         }
+        if (gen !== speakGeneration) return;
+        if (String(voiceId).startsWith('browser:')) {
+          speakBrowser(spoken);
+          return;
+        }
+        setState('Could not play this voice. Click the orb or Preview once, then try again.', 'idle');
+        return;
       } else {
         const data = await res.json().catch(() => ({}));
         setState(data.error || 'This voice needs setup in Settings → Jarvis.', 'idle');
         return;
       }
     } catch (_) {
-      /* use browser voice */
+      if (String(voiceId).startsWith('browser:') || String(voiceId).startsWith('local:')) {
+        if (gen === speakGeneration) speakBrowser(spoken);
+        return;
+      }
+      if (gen === speakGeneration) {
+        setState('Voice playback failed. Check Settings → Jarvis.', 'idle');
+      }
+      return;
     }
-    if (gen === speakGeneration) speakBrowser(spoken);
   }
 
   if (window.speechSynthesis) {
@@ -291,6 +339,7 @@
       setState('Voice input is not supported in this browser. Type instead.', 'idle');
       return;
     }
+    unlockAudio();
     stopSpeech();
     recognition = new Ctor();
     recognition.lang = 'en-US';
@@ -344,7 +393,8 @@
   window.syncJarvis = function syncJarvis() {
     applyEnabled();
     if (voicePref) voicePref.checked = voiceOn;
-    const voiceId = (window.jarvisVoiceConfig && window.jarvisVoiceConfig.voiceId) || currentVoiceId();
+    const fromConfig = window.jarvisVoiceConfig && window.jarvisVoiceConfig.voiceId;
+    const voiceId = fromConfig || currentVoiceId();
     localStorage.setItem(STORAGE_VOICE_ID, voiceId);
     if (voiceSelect && voiceId) voiceSelect.value = voiceId;
   };
@@ -362,7 +412,14 @@
     localStorage.setItem(STORAGE_VOICE, voiceOn ? '1' : '0');
     if (!voiceOn) stopSpeech();
   });
+  voiceSelect?.addEventListener('change', () => {
+    const voiceId = voiceSelect.value;
+    if (!voiceId) return;
+    localStorage.setItem(STORAGE_VOICE_ID, voiceId);
+    if (window.jarvisVoiceConfig) window.jarvisVoiceConfig.voiceId = voiceId;
+  });
   voicePreview?.addEventListener('click', () => {
+    unlockAudio();
     if (!voiceOn) {
       voiceOn = true;
       localStorage.setItem(STORAGE_VOICE, '1');
@@ -371,11 +428,13 @@
     speak(PREVIEW_LINE);
   });
   talk?.addEventListener('click', () => {
+    unlockAudio();
     if (listening) stopListening();
     else startListening();
   });
   form?.addEventListener('submit', (event) => {
     event.preventDefault();
+    unlockAudio();
     const value = input.value;
     input.value = '';
     ask(value);
