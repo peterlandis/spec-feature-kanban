@@ -2194,6 +2194,42 @@ body {
   color: var(--text-muted);
 }
 
+.graph-2d-related-roster {
+  max-height: calc(100% - 4.5rem);
+}
+
+.graph-2d-related-focus {
+  flex: 0 0 auto;
+}
+
+.graph-2d-related-focus-card {
+  display: grid;
+  gap: 0.12rem;
+  padding: 0.5rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(88, 166, 255, 0.45);
+  background: rgba(31, 111, 235, 0.14);
+}
+
+.graph-2d-related-type {
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #79b8ff;
+}
+
+.graph-2d-related-roster .graph-3d-roster-list {
+  overflow: auto;
+}
+
+.graph-3d-roster.is-related .graph-3d-roster-list {
+  overflow: auto;
+}
+
+.graph-3d-roster.is-related {
+  max-height: calc(100% - 4.5rem);
+}
+
 .graph-3d-inspect-kicker {
   margin: 0 0 0.2rem;
   font-size: 0.64rem;
