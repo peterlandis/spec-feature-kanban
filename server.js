@@ -60,6 +60,12 @@ import {
 import { briefJarvis } from './workflow/jarvis-brief.js';
 import { buildJarvisContext, nextGateHint } from './workflow/jarvis-context.js';
 import { suggestFocusFeatures } from './workflow/focus-suggestions.js';
+import { createPhase, getActivePhase, getPhase, listPhases } from './workflow/phases.js';
+import {
+  cancelPhaseRunner,
+  getPhaseRunnerStatus,
+  runPhaseJob,
+} from './workflow/phase-runner.js';
 import { listJarvisVoices, synthesizeJarvisSpeech } from './workflow/jarvis-voice.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -737,6 +743,157 @@ app.get('/api/graph/focus-suggestions', (req, res) => {
       nextGateFor: nextGateHint,
     });
     res.json({ suggestions, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/phases - List saved phases + active runner */
+app.get('/api/phases', (req, res) => {
+  try {
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const listed = listPhases(specRoot);
+    res.json({
+      ...listed,
+      runner: getPhaseRunnerStatus(),
+      activePhase: getActivePhase(specRoot),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/phases/:phaseId */
+app.get('/api/phases/:phaseId', (req, res) => {
+  try {
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const phase = getPhase(specRoot, req.params.phaseId);
+    if (!phase) return res.status(404).json({ error: 'Phase not found' });
+    res.json({ phase, runner: getPhaseRunnerStatus() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/phases
+ * Body: { title?, mode?: 'plan'|'plan-implement', featureIds?: string[], fromFocus?: boolean, limit?: number }
+ */
+app.post('/api/phases', (req, res) => {
+  try {
+    const body = req.body || {};
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const content = readFeaturesFile();
+    const parsed = parseFeaturesMd(content);
+    const categories = attachWorkflowSummaries(parsed.categories);
+    const flat = flattenFeaturesFromCategories(categories);
+    const byId = new Map(flat.map((f) => [normalizeFeatureId(f.featureId) || f.featureId, f]));
+
+    let items = [];
+    if (body.fromFocus) {
+      const planContentsById = loadPlanContentsForFeatures(specRoot, flat);
+      const graph = buildFeatureGraph(flat, { planContentsById });
+      const limit = Math.max(1, Math.min(8, Number(body.limit) || 4));
+      const suggestions = suggestFocusFeatures(flat, graph, { limit, nextGateFor: nextGateHint });
+      items = suggestions.map((item) => ({
+        featureId: item.featureId,
+        title: item.title,
+        why: item.why,
+      }));
+    } else if (Array.isArray(body.featureIds)) {
+      items = body.featureIds.map((id) => {
+        const canon = normalizeFeatureId(id) || String(id || '').trim();
+        const feature = byId.get(canon);
+        return {
+          featureId: canon,
+          title: feature ? feature.title : canon,
+          why: '',
+        };
+      }).filter((item) => item.featureId);
+    } else if (Array.isArray(body.items)) {
+      items = body.items;
+    }
+
+    const phase = createPhase(specRoot, {
+      title: body.title,
+      mode: body.mode === 'plan-implement' ? 'plan-implement' : 'plan',
+      items,
+    });
+    res.status(201).json({ phase });
+  } catch (err) {
+    const status = /at least one/.test(err.message) ? 400 : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/phases/:phaseId/run
+ * Body: { confirmed: true, mode?: 'plan'|'plan-implement' }
+ * plan-implement auto-approves plans for the batch (explicit confirm required).
+ */
+app.post('/api/phases/:phaseId/run', (req, res) => {
+  try {
+    if (!req.body || req.body.confirmed !== true) {
+      return res.status(400).json({ error: 'Run phase requires confirmed: true.' });
+    }
+    requireCursorConfigured();
+    const specRoot = resolveSpecRoot(activeFeaturesPath);
+    const phase = getPhase(specRoot, req.params.phaseId);
+    if (!phase) return res.status(404).json({ error: 'Phase not found' });
+    if (getPhaseRunnerStatus().running) {
+      return res.status(409).json({ error: 'A phase is already running.' });
+    }
+    const cwd = resolveGitRoot(activeFeaturesPath);
+    if (!cwd) {
+      return res.status(400).json({
+        error: 'Phased runs need a git repository. Point FEATURES.md at a git project first.',
+      });
+    }
+    const mode = req.body.mode === 'plan-implement' || phase.mode === 'plan-implement'
+      ? 'plan-implement'
+      : 'plan';
+
+    // Fire-and-forget; UI polls phase status.
+    runPhaseJob({
+      specRoot,
+      featuresAbsPath: activeFeaturesPath,
+      phaseId: phase.id,
+      mode,
+      loadFeature: (featureId) => {
+        const { parsed } = loadRegistry();
+        const categories = attachWorkflowSummaries(parsed.categories);
+        const flat = flattenFeaturesFromCategories(categories);
+        return flat.find((f) => (normalizeFeatureId(f.featureId) || f.featureId) === featureId) || null;
+      },
+      updateFeatureFields: (featureId, fields) => updateFeatureFields(featureId, fields),
+    }).catch((err) => {
+      console.error('[phase-runner]', err);
+    });
+
+    res.json({
+      ok: true,
+      phase: getPhase(specRoot, phase.id),
+      runner: getPhaseRunnerStatus(),
+      mode,
+    });
+  } catch (err) {
+    const status = /CURSOR_API_KEY|git repository|confirmed/.test(err.message) ? 400
+      : /already running/.test(err.message) ? 409
+      : 500;
+    if (status === 500) console.error(err);
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/** POST /api/phases/cancel - Cancel the active phase runner (in-flight Cursor run is not killed) */
+app.post('/api/phases/cancel', (req, res) => {
+  try {
+    const cancelled = cancelPhaseRunner();
+    res.json({ ok: true, cancelled });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

@@ -268,7 +268,7 @@ export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFea
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = planningPrompt(feature, artifactRefs(specRoot, feature));
   updateFeatureStatus(STATUS_PLANNING);
-  executeKind({
+  return executeKind({
     specRoot,
     feature,
     cwd,
@@ -281,12 +281,14 @@ export function startPlanningRun({ specRoot, feature, featuresAbsPath, updateFea
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_PLAN_REVIEW);
     else if (outcome.status === 'cancelled') updateFeatureStatus(STATUS_PAUSED);
     else updateFeatureStatus(STATUS_BLOCKED);
+    return outcome;
   }).catch((err) => {
     updateFeatureWorkflow(specRoot, feature.featureId, {
       runStatus: 'error',
       lastError: err.message,
     });
     updateFeatureStatus(STATUS_BLOCKED);
+    return { status: 'error', error: err.message };
   });
 }
 
@@ -294,7 +296,7 @@ export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, upd
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = revisionPrompt(feature, note);
   updateFeatureStatus(STATUS_PLANNING);
-  executeKind({
+  return executeKind({
     specRoot,
     feature,
     cwd,
@@ -307,12 +309,14 @@ export function startRevisionRun({ specRoot, feature, featuresAbsPath, note, upd
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_PLAN_REVIEW);
     else if (outcome.status === 'cancelled') updateFeatureStatus(STATUS_PLAN_REVIEW);
     else updateFeatureStatus(STATUS_BLOCKED);
+    return outcome;
   }).catch((err) => {
     updateFeatureWorkflow(specRoot, feature.featureId, {
       runStatus: 'error',
       lastError: err.message,
     });
     updateFeatureStatus(STATUS_BLOCKED);
+    return { status: 'error', error: err.message };
   });
 }
 
@@ -320,7 +324,7 @@ export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFe
   const cwd = getRepoCwd(featuresAbsPath);
   const prompt = implementPrompt(feature, artifactRefs(specRoot, feature));
   updateFeatureStatus(STATUS_WIP);
-  executeKind({
+  return executeKind({
     specRoot,
     feature,
     cwd,
@@ -333,12 +337,14 @@ export function startImplementRun({ specRoot, feature, featuresAbsPath, updateFe
     if (outcome.status === 'finished') updateFeatureStatus(STATUS_TESTING);
     else if (outcome.status === 'cancelled') updateFeatureStatus(STATUS_PAUSED);
     else updateFeatureStatus(STATUS_BLOCKED);
+    return outcome;
   }).catch((err) => {
     updateFeatureWorkflow(specRoot, feature.featureId, {
       runStatus: 'error',
       lastError: err.message,
     });
     updateFeatureStatus(STATUS_BLOCKED);
+    return { status: 'error', error: err.message };
   });
 }
 

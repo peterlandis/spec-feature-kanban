@@ -994,18 +994,21 @@ function renderMainView() {
   const columns = document.getElementById('columns');
   const processView = document.getElementById('processView');
   const graphView = document.getElementById('graphView');
-  const focusStrip = document.getElementById('boardFocusStrip');
   if (columns) columns.hidden = view !== 'board';
   if (processView) processView.hidden = view !== 'process';
   if (graphView) graphView.hidden = view !== 'graph';
-  if (focusStrip) focusStrip.hidden = view !== 'board';
   syncViewToggleButtons();
-  if (view === 'process') renderProcess();
-  else if (view === 'graph') renderGraphPage();
-  else {
-    stopProcessPolling();
-    renderColumns();
+  if (view === 'process') {
+    renderProcess();
     refreshBoardFocus().catch(() => {});
+    refreshBoardPhase().catch(() => {});
+  } else if (view === 'graph') {
+    stopBoardPhasePolling();
+    renderGraphPage();
+  } else {
+    stopProcessPolling();
+    stopBoardPhasePolling();
+    renderColumns();
   }
 }
 
@@ -3358,7 +3361,8 @@ function plainStatusLabel(status) {
 async function refreshBoardFocus() {
   const strip = document.getElementById('boardFocusStrip');
   const list = document.getElementById('boardFocusList');
-  if (!strip || !list || uiState.mainView !== 'board') return;
+  if (!strip || !list || uiState.mainView !== 'process') return;
+  strip.hidden = false;
   list.innerHTML = '<p class="board-focus-empty">Loading suggestions…</p>';
   try {
     const res = await fetch(`${API}/graph/focus-suggestions?limit=4`);
@@ -3409,6 +3413,160 @@ function focusGraphFeature(featureId) {
       setGraphFocus(featureId);
     }
   }, 60);
+}
+
+let boardPhasePollTimer = null;
+let boardPhaseState = { phase: null, runner: null };
+
+function stopBoardPhasePolling() {
+  if (boardPhasePollTimer) {
+    clearInterval(boardPhasePollTimer);
+    boardPhasePollTimer = null;
+  }
+}
+
+function renderBoardPhase() {
+  const panel = document.getElementById('boardPhasePanel');
+  const list = document.getElementById('boardPhaseList');
+  const lead = document.getElementById('boardPhaseLead');
+  const runBtn = document.getElementById('runBoardPhase');
+  const cancelBtn = document.getElementById('cancelBoardPhase');
+  const modeSelect = document.getElementById('boardPhaseMode');
+  if (!panel || !list) return;
+
+  const phase = boardPhaseState.phase;
+  const runner = boardPhaseState.runner || {};
+  const onProcess = uiState.mainView === 'process';
+  panel.hidden = !(onProcess && phase);
+  if (!onProcess) {
+    stopBoardPhasePolling();
+    return;
+  }
+  if (!phase) {
+    list.innerHTML = '';
+    stopBoardPhasePolling();
+    return;
+  }
+
+  if (modeSelect && phase.mode && document.activeElement !== modeSelect) {
+    modeSelect.value = phase.mode === 'plan-implement' ? 'plan-implement' : 'plan';
+  }
+  if (lead) {
+    const done = (phase.items || []).filter((item) => item.status === 'done').length;
+    const total = (phase.items || []).length;
+    lead.textContent = phase.status === 'running'
+      ? `Running ${phase.title || phase.id} — ${done}/${total} done${phase.currentFeatureId ? ` · now ${phase.currentFeatureId}` : ''}`
+      : phase.status === 'complete'
+        ? `${phase.title || 'Phase'} complete — review plan/tasks/reviews in each workspace.`
+        : phase.status === 'failed' || phase.status === 'cancelled'
+          ? `${phase.title || 'Phase'} ${phase.status}${phase.error ? `: ${phase.error}` : ''}`
+          : `${phase.title || 'Phase'} ready — choose mode, then Run phase.`;
+  }
+  if (runBtn) {
+    runBtn.disabled = phase.status === 'running' || runner.running;
+    runBtn.textContent = phase.status === 'complete' ? 'Run again' : 'Run phase';
+  }
+  if (cancelBtn) {
+    cancelBtn.hidden = !(phase.status === 'running' || runner.running);
+  }
+
+  list.innerHTML = (phase.items || []).map((item) => {
+    const badge = item.status || 'pending';
+    const meta = [
+      item.step ? `step: ${item.step}` : '',
+      item.why || '',
+      item.error || '',
+    ].filter(Boolean).join(' · ');
+    return `
+      <article class="board-phase-item is-${escapeHtml(item.status || 'pending')}" data-phase-feature="${escapeHtml(item.featureId)}">
+        <span class="board-phase-badge">${escapeHtml(badge)}</span>
+        <div>
+          <p class="board-phase-id">${escapeHtml(item.featureId)}</p>
+          <p class="board-phase-title">${escapeHtml(item.title || item.featureId)}</p>
+          ${meta ? `<p class="board-phase-meta">${escapeHtml(meta)}</p>` : ''}
+        </div>
+        <div class="board-phase-actions">
+          <button type="button" class="btn btn-secondary" data-phase-open="${escapeHtml(item.featureId)}">Open</button>
+        </div>
+      </article>
+    `;
+  }).join('') || '<p class="board-phase-empty">No features in this phase.</p>';
+
+  if (phase.status === 'running' || runner.running) {
+    if (!boardPhasePollTimer) {
+      boardPhasePollTimer = setInterval(() => {
+        refreshBoardPhase().catch(() => {});
+      }, 2500);
+    }
+  } else {
+    stopBoardPhasePolling();
+  }
+}
+
+async function refreshBoardPhase() {
+  if (uiState.mainView !== 'process') return;
+  const res = await fetch(`${API}/phases`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to load phases');
+  }
+  const data = await res.json();
+  boardPhaseState.runner = data.runner || null;
+  boardPhaseState.phase = data.activePhase
+    || (data.phases && data.phases[0])
+    || boardPhaseState.phase;
+  // If we have a selected phase id in memory, prefer that object from list.
+  if (boardPhaseState.phase && Array.isArray(data.phases)) {
+    const match = data.phases.find((item) => item.id === boardPhaseState.phase.id);
+    if (match) boardPhaseState.phase = match;
+  }
+  renderBoardPhase();
+}
+
+async function buildPhaseFromFocus() {
+  const modeSelect = document.getElementById('boardPhaseMode');
+  const mode = modeSelect && modeSelect.value === 'plan-implement' ? 'plan-implement' : 'plan';
+  const res = await fetch(`${API}/phases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fromFocus: true, limit: 4, mode }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to build phase');
+  boardPhaseState.phase = data.phase;
+  renderBoardPhase();
+  toast(`Phase ready with ${(data.phase.items || []).length} features`);
+}
+
+async function runBoardPhase() {
+  const phase = boardPhaseState.phase;
+  if (!phase) throw new Error('Build a phase first.');
+  const modeSelect = document.getElementById('boardPhaseMode');
+  const mode = modeSelect && modeSelect.value === 'plan-implement' ? 'plan-implement' : 'plan';
+  const label = mode === 'plan-implement'
+    ? 'Run this phase overnight? Plans will be auto-approved, then each feature will be implemented. You will review artifacts in the morning.'
+    : 'Run this phase overnight? Each feature will be planned and left in PlanReview for morning review.';
+  if (!window.confirm(label)) return;
+  const res = await fetch(`${API}/phases/${encodeURIComponent(phase.id)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, mode }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to start phase');
+  boardPhaseState.phase = data.phase || phase;
+  boardPhaseState.runner = data.runner || { running: true };
+  renderBoardPhase();
+  toast('Phase started — leave this tab open or keep the server running');
+  refreshBoardPhase().catch(() => {});
+}
+
+async function cancelBoardPhase() {
+  const res = await fetch(`${API}/phases/cancel`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to cancel phase');
+  toast(data.cancelled ? 'Phase cancel requested' : 'No phase runner was active');
+  await refreshBoardPhase();
 }
 
 function renderColumns() {
@@ -4662,6 +4820,21 @@ document.getElementById('viewProcess')?.addEventListener('click', () => setMainV
 document.getElementById('viewGraph')?.addEventListener('click', () => setMainView('graph'));
 document.getElementById('refreshBoardFocus')?.addEventListener('click', () => {
   refreshBoardFocus().catch((err) => toast(err.message || 'Failed to refresh focus', 'error'));
+});
+document.getElementById('buildPhaseFromFocus')?.addEventListener('click', () => {
+  buildPhaseFromFocus().catch((err) => toast(err.message || 'Failed to build phase', 'error'));
+});
+document.getElementById('runBoardPhase')?.addEventListener('click', () => {
+  runBoardPhase().catch((err) => toast(err.message || 'Failed to run phase', 'error'));
+});
+document.getElementById('cancelBoardPhase')?.addEventListener('click', () => {
+  cancelBoardPhase().catch((err) => toast(err.message || 'Failed to cancel phase', 'error'));
+});
+document.getElementById('boardPhaseList')?.addEventListener('click', (event) => {
+  const openBtn = event.target.closest('[data-phase-open]');
+  if (!openBtn) return;
+  const id = openBtn.getAttribute('data-phase-open');
+  if (id) openWorkspace(id).catch((err) => toast(err.message || 'Failed to open workspace', 'error'));
 });
 document.getElementById('boardFocusList')?.addEventListener('click', (event) => {
   const openBtn = event.target.closest('[data-focus-open]');
