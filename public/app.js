@@ -147,6 +147,15 @@ async function browseForFeaturesFile() {
   return res.json();
 }
 
+async function openProjectFolder() {
+  const res = await fetch(`${API}/open-project-folder`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to open project folder');
+  }
+  return res.json();
+}
+
 async function createFeaturesFile(fileName) {
   const res = await fetch(`${API}/create-features-file`, {
     method: 'POST',
@@ -689,6 +698,7 @@ function renderFeaturesFileSelector() {
   const select = document.getElementById('featuresFileSelect');
   const applyBtn = document.getElementById('applyFeaturesFile');
   const browseBtn = document.getElementById('browseFeaturesFile');
+  const openProjectBtn = document.getElementById('openProjectFolder');
   const createBtn = document.getElementById('createFeaturesFile');
   if (!select || !applyBtn || !browseBtn || !createBtn) return;
 
@@ -718,21 +728,28 @@ function renderFeaturesFileSelector() {
   setSubtitle(`Managing ${active || 'FEATURES.md'}`);
 
   const disabled = !!configState.usingEnvOverride;
+  const browseOk = !!configState.browseSupported;
   select.disabled = disabled;
   applyBtn.disabled = disabled;
-  browseBtn.disabled = disabled || !configState.browseSupported;
+  browseBtn.disabled = disabled || !browseOk;
+  if (openProjectBtn) openProjectBtn.disabled = disabled || !browseOk;
   createBtn.disabled = disabled;
   if (disabled) {
     applyBtn.title = 'FEATURES_PATH env override is set';
     browseBtn.title = 'FEATURES_PATH env override is set';
+    if (openProjectBtn) openProjectBtn.title = 'FEATURES_PATH env override is set';
     createBtn.title = 'FEATURES_PATH env override is set';
-  } else if (!configState.browseSupported) {
+  } else if (!browseOk) {
     browseBtn.title = 'Browse is not supported in this environment';
+    if (openProjectBtn) openProjectBtn.title = 'Open Project is not supported in this environment';
     createBtn.title = '';
   } else {
     applyBtn.title = '';
-    browseBtn.title = '';
-    createBtn.title = '';
+    browseBtn.title = 'Select an existing FEATURES.md';
+    if (openProjectBtn) {
+      openProjectBtn.title = 'Select a project folder (creates specifications/ if missing)';
+    }
+    createBtn.title = 'Create a FEATURES.md inside this Kanban app repo';
   }
 }
 
@@ -771,6 +788,9 @@ async function initConfigUi() {
     if (typeof window.syncJarvis === 'function') window.syncJarvis();
     if (configState.cursorConfigured) {
       refreshCursorModels({ silent: true }).catch(() => {});
+    }
+    if (cfg.scaffold && cfg.scaffold.createdCount && cfg.scaffold.message) {
+      toast(cfg.scaffold.message);
     }
   } catch (err) {
     setSubtitle('Failed to load FEATURES.md selection');
@@ -4789,7 +4809,7 @@ document.getElementById('browseFeaturesFile')?.addEventListener('click', async (
   try {
     const result = await browseForFeaturesFile();
     if (result && result.cancelled) return;
-    toast('Switched FEATURES.md');
+    toast((result && result.scaffold && result.scaffold.message) || 'Switched FEATURES.md');
     await initConfigUi();
     await load();
   } catch (err) {
@@ -4797,12 +4817,27 @@ document.getElementById('browseFeaturesFile')?.addEventListener('click', async (
   }
 });
 
+document.getElementById('openProjectFolder')?.addEventListener('click', async () => {
+  try {
+    const result = await openProjectFolder();
+    if (result && result.cancelled) return;
+    toast((result && result.scaffold && result.scaffold.message) || 'Opened project folder');
+    await initConfigUi();
+    await load();
+  } catch (err) {
+    toast(err.message || 'Failed to open project folder', 'error');
+  }
+});
+
 document.getElementById('createFeaturesFile')?.addEventListener('click', async () => {
   try {
-    const fileName = (window.prompt('New features file name (e.g. FEATURES_EXAMPLES.md)') || '').trim();
+    const fileName = (window.prompt(
+      'New features file (default path: specifications/FEATURES.md).\nExamples: FEATURES.md or specs/FEATURES_MVP.md',
+      'FEATURES.md',
+    ) || '').trim();
     if (!fileName) return;
-    await createFeaturesFile(fileName);
-    toast('Created and switched file');
+    const created = await createFeaturesFile(fileName);
+    toast((created && created.scaffold && created.scaffold.message) || 'Created and switched file');
     await initConfigUi();
     await load();
   } catch (err) {
