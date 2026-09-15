@@ -956,10 +956,15 @@ async function jarvisExecuteConfirm(action, featureId) {
   };
   const path = paths[action];
   if (!path) throw new Error('That gate is not available from Jarvis.');
+  const body = { confirmed: true };
+  if (action === 'startPlanning' || action === 'startImplement') {
+    const model = selectedWorkspaceModel();
+    if (model) body.model = model;
+  }
   const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmed: true }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -2888,6 +2893,7 @@ function renderWorkspace(payload) {
   const approved = !!workflow.planApprovedAt;
   const configured = !!configState.cursorConfigured;
   renderAgentTranscript(workflow);
+  renderWorkspaceCursorModel(workflow, running);
 
   document.getElementById('approvePlan').textContent = approved ? 'Plan approved' : 'Approve plan';
   document.getElementById('approvePlan').disabled = approved || !tasks.exists || running;
@@ -2962,8 +2968,9 @@ function renderWorkspace(payload) {
   }));
 
   const hint = document.getElementById('cursorConfigHint');
+  const featureModel = workflow.preferredModel || workflow.model || configState.cursorModel || 'composer-2.5';
   hint.textContent = configured
-    ? `Local Cursor agent (${configState.cursorModel || 'composer-2.5'}). One concurrent run per feature.`
+    ? `Local Cursor agent for this feature: ${featureModel}. Change the model above before planning or implementing. One concurrent run per feature.`
     : 'Save a Cursor API key in Settings → IDE tools to fire agents from the app.';
 
   const runMeta = document.getElementById('runMeta');
@@ -3140,14 +3147,66 @@ async function postWorkflow(path, body, fallbackError) {
   return res.json();
 }
 
+function renderWorkspaceCursorModel(workflow, running) {
+  const select = document.getElementById('workspaceCursorModel');
+  if (!select) return;
+  const models = configState.cursorModels || [];
+  const defaultId = configState.cursorModel || 'composer-2.5';
+  const preferred = String((workflow && workflow.preferredModel) || '').trim();
+  const previous = select.value;
+  select.innerHTML = '';
+  select.appendChild(new Option(`Settings default (${defaultId})`, ''));
+  const ids = new Set();
+  for (const model of models) {
+    if (!model || !model.id || ids.has(model.id)) continue;
+    ids.add(model.id);
+    const label = model.displayName && model.displayName !== model.id
+      ? `${model.displayName} (${model.id})`
+      : model.id;
+    select.appendChild(new Option(label, model.id));
+  }
+  if (preferred && !ids.has(preferred)) {
+    select.appendChild(new Option(`${preferred} (saved)`, preferred));
+  }
+  const next = preferred || previous || '';
+  select.value = next;
+  if (select.value !== next) select.value = '';
+  select.disabled = !configState.cursorConfigured || !!running;
+}
+
+function selectedWorkspaceModel() {
+  const select = document.getElementById('workspaceCursorModel');
+  return select && select.value ? select.value : '';
+}
+
+async function saveWorkspacePreferredModel(model) {
+  const featureId = uiState.workspaceFeatureId;
+  if (!featureId) return;
+  const res = await fetch(`${API}/features/${encodeURIComponent(featureId)}/preferred-model`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: model || '' }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to save model preference');
+  }
+  const data = await res.json();
+  if (data.workspace) renderWorkspace(data.workspace);
+}
+
 async function startPlanning() {
   const featureId = uiState.workspaceFeatureId;
   if (!featureId) return;
+  const model = selectedWorkspaceModel();
+  const modelLabel = model || configState.cursorModel || 'default';
   const ok = window.confirm(
-    `Start a local Cursor agent to write the plan and tasks for ${featureId}? This spends Cursor usage. It will not implement product code.`
+    `Start a local Cursor agent (${modelLabel}) to write the plan and tasks for ${featureId}? This spends Cursor usage. It will not implement product code.`
   );
   if (!ok) return;
-  const data = await postWorkflow('/start-planning', { confirmed: true }, 'Failed to start planning');
+  const body = { confirmed: true };
+  if (model) body.model = model;
+  const data = await postWorkflow('/start-planning', body, 'Failed to start planning');
   renderWorkspace(data.workspace);
   await load();
   toast('Planning agent started');
@@ -3203,11 +3262,15 @@ async function sendRevision() {
     toast('Enter a revision note first', 'error');
     return;
   }
+  const model = selectedWorkspaceModel();
+  const modelLabel = model || configState.cursorModel || 'default';
   const ok = window.confirm(
-    `Send this revision to the Cursor agent for ${featureId}? It will edit plan and task files only.`
+    `Send this revision to the Cursor agent (${modelLabel}) for ${featureId}? It will edit plan and task files only.`
   );
   if (!ok) return;
-  const data = await postWorkflow('/revise', { confirmed: true, note }, 'Failed to start revision');
+  const body = { confirmed: true, note };
+  if (model) body.model = model;
+  const data = await postWorkflow('/revise', body, 'Failed to start revision');
   renderWorkspace(data.workspace);
   await load();
   toast('Revision agent started');
@@ -3216,11 +3279,15 @@ async function sendRevision() {
 async function startImplement() {
   const featureId = uiState.workspaceFeatureId;
   if (!featureId) return;
+  const model = selectedWorkspaceModel();
+  const modelLabel = model || configState.cursorModel || 'default';
   const ok = window.confirm(
-    `Start implementation for ${featureId} with the local Cursor agent? This writes product code from the approved plan.`
+    `Start implementation for ${featureId} with Cursor model ${modelLabel}? This writes product code from the approved plan.`
   );
   if (!ok) return;
-  const data = await postWorkflow('/implement', { confirmed: true }, 'Failed to start implementation');
+  const body = { confirmed: true };
+  if (model) body.model = model;
+  const data = await postWorkflow('/implement', body, 'Failed to start implementation');
   renderWorkspace(data.workspace);
   await load();
   toast('Implementation agent started');
@@ -3699,6 +3766,10 @@ document.querySelectorAll('[data-edit-for]').forEach((button) => {
 });
 document.getElementById('startPlanning').addEventListener('click', () => {
   startPlanning().catch((err) => toast(err.message || 'Failed to start planning', 'error'));
+});
+document.getElementById('workspaceCursorModel')?.addEventListener('change', () => {
+  const model = selectedWorkspaceModel();
+  saveWorkspacePreferredModel(model).catch((err) => toast(err.message || 'Failed to save model', 'error'));
 });
 document.getElementById('approvePlan').addEventListener('click', () => {
   approvePlan().catch((err) => toast(err.message || 'Failed to approve plan', 'error'));
