@@ -61,7 +61,7 @@ import { briefJarvis } from './workflow/jarvis-brief.js';
 import { buildJarvisContext, nextGateHint } from './workflow/jarvis-context.js';
 import { suggestFocusFeatures } from './workflow/focus-suggestions.js';
 import { ensureSpecScaffold, summarizeScaffold } from './workflow/inflate-specifications.js';
-import { createPhase, getActivePhase, getPhase, listPhases } from './workflow/phases.js';
+import { createPhase, getActivePhase, getPhase, listPhases, normalizePhaseModels, updatePhase } from './workflow/phases.js';
 import {
   cancelPhaseRunner,
   getPhaseRunnerStatus,
@@ -855,15 +855,39 @@ app.get('/api/graph/focus-suggestions', (req, res) => {
   }
 });
 
-/** GET /api/phases - List saved phases + active runner */
+/** GET /api/phases - List saved phases + active runner + live CoT for current feature */
 app.get('/api/phases', (req, res) => {
   try {
     const specRoot = resolveSpecRoot(activeFeaturesPath);
     const listed = listPhases(specRoot);
+    const activePhase = getActivePhase(specRoot);
+    const runningPhase = activePhase
+      || (listed.phases || []).find((item) => item.status === 'running')
+      || null;
+    let liveRun = null;
+    const featureIdForLive = runningPhase && runningPhase.currentFeatureId
+      ? runningPhase.currentFeatureId
+      : null;
+    if (featureIdForLive) {
+      const wf = getFeatureWorkflow(specRoot, featureIdForLive) || {};
+      const item = (runningPhase.items || []).find((row) => row.featureId === featureIdForLive);
+      liveRun = {
+        featureId: featureIdForLive,
+        title: (item && item.title) || featureIdForLive,
+        step: (item && item.step) || null,
+        kind: wf.kind || null,
+        runStatus: wf.runStatus || null,
+        model: wf.model || wf.preferredModel || null,
+        lastAssistantText: wf.lastAssistantText || '',
+        lastError: wf.lastError || null,
+        transcript: Array.isArray(wf.transcript) ? wf.transcript : [],
+      };
+    }
     res.json({
       ...listed,
       runner: getPhaseRunnerStatus(),
-      activePhase: getActivePhase(specRoot),
+      activePhase,
+      liveRun,
     });
   } catch (err) {
     console.error(err);
@@ -927,6 +951,7 @@ app.post('/api/phases', (req, res) => {
       title: body.title,
       mode: body.mode === 'plan-implement' ? 'plan-implement' : 'plan',
       items,
+      models: normalizePhaseModels(body.models),
     });
     res.status(201).json({ phase });
   } catch (err) {
@@ -962,6 +987,11 @@ app.post('/api/phases/:phaseId/run', (req, res) => {
     const mode = req.body.mode === 'plan-implement' || phase.mode === 'plan-implement'
       ? 'plan-implement'
       : 'plan';
+    const models = normalizePhaseModels({
+      ...(phase.models || {}),
+      ...(req.body.models || {}),
+    });
+    updatePhase(specRoot, phase.id, { mode, models });
 
     // Fire-and-forget; UI polls phase status.
     runPhaseJob({
@@ -969,6 +999,7 @@ app.post('/api/phases/:phaseId/run', (req, res) => {
       featuresAbsPath: activeFeaturesPath,
       phaseId: phase.id,
       mode,
+      models,
       loadFeature: (featureId) => {
         const { parsed } = loadRegistry();
         const categories = attachWorkflowSummaries(parsed.categories);
@@ -985,6 +1016,7 @@ app.post('/api/phases/:phaseId/run', (req, res) => {
       phase: getPhase(specRoot, phase.id),
       runner: getPhaseRunnerStatus(),
       mode,
+      models,
     });
   } catch (err) {
     const status = /CURSOR_API_KEY|git repository|confirmed/.test(err.message) ? 400

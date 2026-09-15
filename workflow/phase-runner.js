@@ -16,6 +16,7 @@ import {
 } from './artifacts.js';
 import {
   getPhase,
+  normalizePhaseModels,
   setActivePhaseId,
   updatePhase,
   updatePhaseItem,
@@ -142,6 +143,7 @@ export async function runPhaseJob(deps) {
     featuresAbsPath,
     phaseId,
     mode,
+    models: modelsInput,
     loadFeature,
     updateFeatureFields,
   } = deps;
@@ -162,12 +164,17 @@ export async function runPhaseJob(deps) {
   const runMode = mode === 'plan-implement' || phase.mode === 'plan-implement'
     ? 'plan-implement'
     : 'plan';
+  const models = normalizePhaseModels({
+    ...(phase.models || {}),
+    ...(modelsInput || {}),
+  });
   const signal = { cancelled: false };
   activeJob = { phaseId, signal };
   setActivePhaseId(specRoot, phaseId);
   updatePhase(specRoot, phaseId, {
     status: 'running',
     mode: runMode,
+    models,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,
@@ -215,11 +222,14 @@ export async function runPhaseJob(deps) {
           });
           feature = loadFeature(featureId) || feature;
 
+          const planModel = models.plan
+            || existing.preferredModel
+            || '';
           const planOutcome = await startPlanningRun({
             specRoot,
             feature,
             featuresAbsPath,
-            model: existing.preferredModel || '',
+            model: planModel,
             updateFeatureStatus: (nextStatus) => updateFeatureFields(featureId, { status: nextStatus }),
           });
           const settled = await waitForRunSettled(specRoot, featureId, { signal });
@@ -254,11 +264,20 @@ export async function runPhaseJob(deps) {
 
             updatePhaseItem(specRoot, phaseId, featureId, { step: 'implement' });
             feature = loadFeature(featureId) || feature;
+            const implModel = models.implement
+              || (getFeatureWorkflow(specRoot, featureId) || {}).preferredModel
+              || '';
+            // Persist review preference for later security/review agents.
+            if (models.review) {
+              updateFeatureWorkflow(specRoot, featureId, {
+                reviewModel: models.review,
+              });
+            }
             const implOutcome = await startImplementRun({
               specRoot,
               feature,
               featuresAbsPath,
-              model: (getFeatureWorkflow(specRoot, featureId) || {}).preferredModel || '',
+              model: implModel,
               updateFeatureStatus: (nextStatus) => updateFeatureFields(featureId, { status: nextStatus }),
             });
             const settled = await waitForRunSettled(specRoot, featureId, { signal });

@@ -70,6 +70,7 @@ export function createPhase(specRoot, {
   mode,
   featureIds,
   items,
+  models,
 } = {}) {
   const ids = Array.isArray(featureIds)
     ? featureIds.map((id) => String(id || '').trim()).filter(Boolean)
@@ -92,6 +93,7 @@ export function createPhase(specRoot, {
     finishedAt: null,
     currentFeatureId: null,
     error: null,
+    models: normalizePhaseModels(models),
     items: unique.map((featureId, index) => ({
       featureId,
       title: (items && items[index] && items[index].title) || featureId,
@@ -110,6 +112,15 @@ export function createPhase(specRoot, {
   return phase;
 }
 
+export function normalizePhaseModels(models) {
+  const src = models && typeof models === 'object' ? models : {};
+  return {
+    plan: String(src.plan || '').trim(),
+    implement: String(src.implement || '').trim(),
+    review: String(src.review || '').trim(),
+  };
+}
+
 export function updatePhase(specRoot, phaseId, patch) {
   const filePath = phasesStatePath(specRoot);
   const state = safeRead(filePath);
@@ -122,6 +133,14 @@ export function updatePhase(specRoot, phaseId, patch) {
     updatedAt: new Date().toISOString(),
   };
   if (Array.isArray(patch.items)) next.items = patch.items;
+  if (patch.models) {
+    next.models = normalizePhaseModels({
+      ...(current.models || {}),
+      ...patch.models,
+    });
+  } else if (!next.models) {
+    next.models = normalizePhaseModels(current.models);
+  }
   state.phases[phaseId] = next;
   writeState(filePath, state);
   return next;
